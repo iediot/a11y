@@ -1036,7 +1036,8 @@ class NativeTests(unittest.TestCase):
         # Centring needs a real monospace font. Qt's offscreen platform on Windows has none (it
         # falls back to a 'monospace' alias with 17px cells), so there the face is wider than her window.
         from PyQt6.QtGui import QFontDatabase
-        if mascot.character.font_.family() in QFontDatabase.families():
+        real_font = mascot.character.font_.family() in QFontDatabase.families()
+        if real_font:
             self.assertAlmostEqual(character_pos.x()+character_size.width()/2, frame.center().x(), delta=1,
                                    msg=f'face {character_size.width()}px in a {frame.width()}px window; font '
                                        f'{mascot.character.font_.family()!r} {mascot.character.font_.pointSizeF()}pt, '
@@ -1060,7 +1061,11 @@ class NativeTests(unittest.TestCase):
         QTest.keyClick(mascot.input, Qt.Key.Key_Return)
         self.qt.processEvents()
         self.assertTrue(mascot.last_prompt.isVisible())
-        self.assertTrue(mascot.last_prompt.text().startswith('› what is the'))
+        shown = mascot.last_prompt.text()
+        self.assertTrue(shown.startswith('› w'), shown)
+        self.assertTrue('› what is the weather like?'.startswith(shown.rstrip('…')), shown)  # elided, never altered
+        if real_font:
+            self.assertTrue(shown.startswith('› what is the'), shown)
         self.assertEqual(mascot.last_prompt.toolTip(), 'what is the weather like?')  # the whole of it
 
     def test_reply_window_lies_under_hers_and_shows_to_the_right(self):
