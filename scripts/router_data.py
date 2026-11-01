@@ -69,14 +69,14 @@ def messages(request, label, recent=(), context=None, last_task=None):
 @lru_cache(maxsize=1)
 def harder_strings():
     """Conservative superset: exclude every literal, including f-string fragments."""
-    tree = ast.parse('\n'.join((ROOT / 'scripts' / name).read_text() for name in ('live_harder.py', 'live_features.py', 'live_capability.py')))
+    tree = ast.parse('\n'.join((ROOT / 'scripts' / name).read_text(encoding='utf-8') for name in ('live_harder.py', 'live_features.py', 'live_capability.py')))
     return {' '.join(n.value.casefold().split()) for n in ast.walk(tree)
             if isinstance(n, ast.Constant) and isinstance(n.value, str) and n.value.strip()}
 
 @lru_cache(maxsize=1)
 def harder_patterns():
     """Also protect variable fixture names and concatenated live requests."""
-    tree = ast.parse('\n'.join((ROOT / 'scripts' / name).read_text() for name in ('live_harder.py', 'live_features.py', 'live_capability.py')))
+    tree = ast.parse('\n'.join((ROOT / 'scripts' / name).read_text(encoding='utf-8') for name in ('live_harder.py', 'live_features.py', 'live_capability.py')))
     patterns = []
     def pattern(node):
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
@@ -279,11 +279,11 @@ def generate(out=OUT):
     rows = build()
     out.mkdir(parents=True, exist_ok=True)
     for split in ('train', 'valid', 'test'):
-        with (out / f'{split}.jsonl').open('w') as f:
+        with (out / f'{split}.jsonl').open('w', encoding='utf-8') as f:
             for row in rows:
                 if row['split'] == split:
                     f.write(json.dumps({'messages': row['messages']}, ensure_ascii=False)+'\n')
-    (out/'manifest.jsonl').write_text(''.join(json.dumps(r, ensure_ascii=False)+'\n' for r in rows))
+    (out/'manifest.jsonl').write_text(''.join(json.dumps(r, ensure_ascii=False)+'\n' for r in rows), encoding='utf-8')
     stats = {s: dict(sorted(Counter(r['plan']['operation'] if r['kind']=='intent' else 'follow_up' for r in rows if r['split']==s).items())) for s in ('train','valid','test')}
     (out/'stats.json').write_text(json.dumps(stats, indent=2)+'\n')
     return stats

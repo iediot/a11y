@@ -2,6 +2,7 @@
 page without opening the log). The suite runs in a child process that names each test as it starts, so a
 silent crash (Windows aborts the process when a QThread outlives its window) still names the test."""
 import io
+import os
 import subprocess
 import sys
 import unittest
@@ -42,7 +43,12 @@ def child():
 
 
 def main():
-    process = subprocess.Popen([sys.executable, __file__, '--child'], stdout=subprocess.PIPE, text=True, encoding='utf-8', errors='replace')
+    # The child writes UTF-8 and this process prints it as UTF-8: test names and failures can hold
+    # characters (›, …) that Windows' cp1252 console encoding cannot, which used to crash this runner.
+    env = dict(os.environ, PYTHONIOENCODING='utf-8')
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    process = subprocess.Popen([sys.executable, __file__, '--child'], stdout=subprocess.PIPE, text=True, encoding='utf-8', errors='replace', env=env)
     last = ''
     for line in process.stdout:
         if line.startswith('START '):

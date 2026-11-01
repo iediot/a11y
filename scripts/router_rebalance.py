@@ -27,7 +27,7 @@ def rebalance(source, output):
         balanced.extend(group[i % len(group)] for i in range(count))
     random.Random(17).shuffle(balanced)
     output.mkdir(parents=True, exist_ok=False)
-    (output/'train.jsonl').write_text(''.join(json.dumps(row, ensure_ascii=False)+'\n' for row in balanced))
+    (output/'train.jsonl').write_text(''.join(json.dumps(row, ensure_ascii=False)+'\n' for row in balanced), encoding='utf-8')
     hashes = {}
     for name in ('valid.jsonl', 'test.jsonl'):
         shutil.copyfile(source/name, output/name)

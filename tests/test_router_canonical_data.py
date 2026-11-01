@@ -22,7 +22,7 @@ class RouterCanonicalDataTests(unittest.TestCase):
             prepare(source,dest)
             self.assertEqual((dest/'test.jsonl').read_bytes(),raw)
             self.assertEqual((source/'train.jsonl').read_bytes(),raw)
-            converted=json.loads((dest/'train.jsonl').read_text())
+            converted=json.loads((dest/'train.jsonl').read_text(encoding='utf-8'))
             self.assertEqual(converted['messages'][:-1],row['messages'][:-1])
             self.assertEqual(json.loads(converted['messages'][-1]['content']),json.loads(row['messages'][-1]['content']))
             with self.assertRaises(FileExistsError):prepare(source,dest)
