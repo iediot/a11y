@@ -1,4 +1,6 @@
 """Offline checks only: no model loads, screenshots or native app calls."""
+import os
+import shutil
 import sys
 from pathlib import Path
 import unittest
@@ -17,12 +19,20 @@ class TrainingToolsTests(unittest.TestCase):
         self.assertFalse(inside_box(None, [0, 0, 1000, 1000]))
         self.assertFalse(inside_box((1001, 500), [0, 0, 990, 1000]))
 
+    @unittest.skipUnless(hasattr(os, 'getpriority'), 'needs POSIX process priorities (os.getpriority)')
     def test_priority_fails_closed(self):
         with patch('training_priority.os.getpriority', return_value=0):
             with self.assertRaisesRegex(RuntimeError, 'Background priority'):
                 require_background()
         with patch('training_priority.os.getpriority', return_value=19):
             require_background()
+
+    def test_priority_fails_closed_without_posix_priorities(self):
+        # Windows has no os.getpriority: the guard must refuse rather than assume background priority.
+        import types
+        with patch('training_priority.os', types.SimpleNamespace()):
+            with self.assertRaisesRegex(RuntimeError, 'Background priority'):
+                require_background()
 
     def test_early_stop_state(self):
         # No MLX import occurs until actual validation callback invocation.
@@ -88,6 +98,7 @@ class RouterFormattingTests(unittest.TestCase):
         self.assertEqual(raw['max_tokens'], 200)
         self.assertEqual(report['follow_up_exact_accuracy'], 0)
 
+    @unittest.skipUnless(os.name == 'posix' and shutil.which('bash'), 'needs a POSIX bash for the shell pipeline')
     def test_pipeline_syntax(self):
         import subprocess
         root = Path(__file__).resolve().parents[1]
@@ -95,7 +106,7 @@ class RouterFormattingTests(unittest.TestCase):
 
     def test_pipeline_scores_base_and_adapter_on_same_snapshot(self):
         root = Path(__file__).resolve().parents[1]
-        pipeline = (root/'scripts/router_pipeline.sh').read_text()
+        pipeline = (root/'scripts/router_pipeline.sh').read_text(encoding='utf-8')
         for name,model in [('eval-base-ollama','qwen3:4b-instruct'),('eval-ollama','a11y-router-test')]:
             stage = pipeline.split('stage '+name+' ',1)[1].split('\nstage ',1)[0]
             self.assertIn('--model '+model,stage)

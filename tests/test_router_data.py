@@ -46,7 +46,7 @@ class RouterDataTests(unittest.TestCase):
             data.generate(root)
             self.assertEqual(first, (root/'train.jsonl').read_bytes())
             for split in ('train','valid','test'):
-                for line in (root/f'{split}.jsonl').read_text().splitlines():
+                for line in (root/f'{split}.jsonl').read_text(encoding='utf-8').splitlines():
                     self.assertEqual(set(json.loads(line)), {'messages'})
 
 

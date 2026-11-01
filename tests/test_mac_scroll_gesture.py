@@ -16,7 +16,7 @@ class MacScrollGestureTests(unittest.TestCase):
         cls.temporary = tempfile.TemporaryDirectory()
         cls.addClassCleanup(cls.temporary.cleanup)
         folder = Path(cls.temporary.name)
-        native = (Path(__file__).resolve().parents[1]/'native'/'DesktopBridge.swift').read_text()
+        native = (Path(__file__).resolve().parents[1]/'native'/'DesktopBridge.swift').read_text(encoding='utf-8')
         # Compile the production packet builder alone: the desktop helper's top-level
         # workspace enumeration and input execution must never run in these tests.
         packet = 'func scrollDistance('+native.split('func scrollDistance(', 1)[1].split('\nfunc attr(', 1)[0]

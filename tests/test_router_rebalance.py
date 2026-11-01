@@ -17,7 +17,7 @@ class ResamplingTests(unittest.TestCase):
             for name in ('valid.jsonl','test.jsonl'):
                 (source/name).write_bytes(b'held-out sentinel\n')
             out = Path(folder)/'balanced'; result = rebalance(source, out)
-            rows = [json.loads(line) for line in (out/'train.jsonl').read_text().splitlines()]
+            rows = [json.loads(line) for line in (out/'train.jsonl').read_text(encoding='utf-8').splitlines()]
             self.assertTrue(all(r in original for r in rows))
             self.assertEqual(sum(json.loads(r['messages'][-1]['content']).get('acts_on_computer') is False for r in rows),3)
             self.assertEqual(result['sampled_rows'],7)

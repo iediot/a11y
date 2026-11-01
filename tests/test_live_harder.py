@@ -51,7 +51,7 @@ class HarderSuite(unittest.TestCase):
         existing = set()
         templates = []
         for name in ('live_eval', 'live_tasks', 'live_hard', 'live_heldout', 'live_broad', 'live_conversation'):
-            tree = ast.parse((SCRIPTS/(name+'.py')).read_text())
+            tree = ast.parse((SCRIPTS/(name+'.py')).read_text(encoding='utf-8'))
             for node in ast.walk(tree):
                 if isinstance(node, ast.Constant) and isinstance(node.value, str):
                     existing.add(' '.join(node.value.casefold().split()))
@@ -127,6 +127,7 @@ class HarderSuite(unittest.TestCase):
         trash.assert_not_called()
         app.quit.assert_called()
 
+    @unittest.skipUnless(sys.platform == 'darwin', 'needs macOS: the TextEdit fixture setup asks System Events through osascript')
     def test_text_check_uses_document_content_not_proposal(self):
         case = next(c for c in self.cases if c['name'] == 'textedit_lines')
         with patch('live_harder.tempfile.mkdtemp', return_value='/tmp/a11y-unit-fixture'), \

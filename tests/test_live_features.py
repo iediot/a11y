@@ -48,7 +48,7 @@ class FeaturesSuite(unittest.TestCase):
         for path in SCRIPTS.glob('live_*.py'):
             if path.stem == 'live_features':
                 continue
-            for node in ast.walk(ast.parse(path.read_text())):
+            for node in ast.walk(ast.parse(path.read_text(encoding='utf-8'))):
                 if isinstance(node, ast.Constant) and isinstance(node.value, str):
                     literals.add(' '.join(node.value.casefold().split()))
                 if isinstance(node, ast.JoinedStr):

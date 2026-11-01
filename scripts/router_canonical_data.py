@@ -37,7 +37,7 @@ def prepare(source,destination):
             shutil.copyfile(src,out)
             continue
         rows=[]
-        for line in src.read_text().splitlines():
+        for line in src.read_text(encoding='utf-8').splitlines():
             if not line.strip():continue
             row=json.loads(line)
             if not row.get('messages') or row['messages'][-1].get('role')!='assistant':
@@ -45,7 +45,7 @@ def prepare(source,destination):
             answer=json.loads(row['messages'][-1]['content'])
             row['messages'][-1]['content']=canonical_answer(answer)
             rows.append(json.dumps(row,ensure_ascii=False))
-        out.write_text('\n'.join(rows)+'\n');report['rows'][split]=len(rows)
+        out.write_text('\n'.join(rows)+'\n', encoding='utf-8');report['rows'][split]=len(rows)
     (destination/'format.json').write_text(json.dumps(report,indent=2)+'\n')
     return report
 
