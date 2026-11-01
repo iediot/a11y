@@ -127,11 +127,62 @@ class Composer(QPlainTextEdit):
     returnPressed = pyqtSignal()
     editingStarted = pyqtSignal()
 
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._history = []
+        self.history_enabled = True
+        self._history_index = None
+        self._history_draft = ''
+
     def setText(self, value):
+        if value != self.toPlainText():
+            self._history_index = None
+            self._history_draft = ''
         self.setPlainText(value)
 
     def text(self):
         return self.toPlainText()
+
+    def clear_sent_history(self):
+        self._history.clear()
+        self._history_index = None
+        self._history_draft = ''
+
+    def remember(self, value):
+        """Session-only sent prompts; never persist drafts or setup answers."""
+        self._history.append(value[:6000])
+        del self._history[:-100]
+        self._history_index = None
+        self._history_draft = ''
+
+    def recall_history(self, direction):
+        if not self.history_enabled or not self._history or direction > 0 and self._history_index is None:
+            return False
+        cursor = self.textCursor()
+        if cursor.hasSelection():
+            return False
+        block = cursor.block()
+        layout = block.layout()
+        line = layout.lineForTextPosition(cursor.positionInBlock())
+        if direction < 0:
+            boundary = block.blockNumber() == 0 and (not line.isValid() or line.lineNumber() == 0)
+        else:
+            boundary = not block.next().isValid() and (not line.isValid() or line.lineNumber() == layout.lineCount()-1)
+        if not boundary:
+            return False
+        if self._history_index is None:
+            self._history_draft = self.toPlainText()
+            self._history_index = len(self._history)
+        self._history_index = max(0, min(len(self._history), self._history_index + direction))
+        if self._history_index == len(self._history):
+            value = self._history_draft
+            self._history_index = None
+            self._history_draft = ''
+        else:
+            value = self._history[self._history_index]
+        self.setPlainText(value)
+        self.moveCursor(QTextCursor.MoveOperation.End)
+        return True
 
     def keyPressEvent(self, event):
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and not event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
@@ -139,6 +190,13 @@ class Composer(QPlainTextEdit):
             event.accept()
         else:
             self.editingStarted.emit()
+            # macOS marks ordinary arrows as keypad keys. Real editing
+            # modifiers (Shift/Cmd/Ctrl/Alt) must still keep their Qt behavior.
+            if (event.modifiers() in (Qt.KeyboardModifier.NoModifier, Qt.KeyboardModifier.KeypadModifier)
+                    and event.key() in (Qt.Key.Key_Up, Qt.Key.Key_Down)
+                    and self.recall_history(-1 if event.key() == Qt.Key.Key_Up else 1)):
+                event.accept()
+                return
             super().keyPressEvent(event)
 
 
@@ -669,8 +727,10 @@ class Mascot(QWidget):
     # Movement: one big stretch, like resizing a window yourself, then back.
 
     def begin_stretch(self):
-        self.finish_animations()
+        # Settle slide values without fitting/repositioning the actual window.
         self.stretching = True
+        self.refit.stop()
+        self.finish_animations()
         self.set_reply_shown(False)
         self.setMinimumSize(0, 0)
         self.setMaximumSize(16777215, 16777215)
@@ -748,6 +808,7 @@ class Mascot(QWidget):
         self.reply_heading = 'working' if working else 'reply'
         self.title_reply()
         self.submit_action = submit_action
+        self.input.history_enabled = submit_action in ('chat', 'computer')
         voice = getattr(self, 'voice_placeholder', '') if getattr(self, 'voice_on', False) else ''
         self.input.setPlaceholderText(placeholder if placeholder and placeholder != 'Ask anything…' else
                                       (voice or 'Ask anything…'))
@@ -867,6 +928,8 @@ class Mascot(QWidget):
             return
         value = self.input.text().strip()
         if value:
+            if self.submit_action in ('chat', 'computer'):
+                self.input.remember(value)
             self.input.clear()
             self.remember_prompt(value)
             self.submitted.emit(value, self.submit_action)

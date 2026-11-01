@@ -38,14 +38,14 @@ class ComputerUse:
             self.vision.execute_click(self.provider, self.desktop, proposal)
         elif kind == 'press_control':
             self.desktop.press(proposal)
-        elif kind in ('launch_app', 'quit_app', 'new_window', 'close_window', 'close_tab', 'choose_menu', 'browse_url', 'play_media', 'type_text', 'press_key', 'scroll'):
+        elif kind in ('launch_app', 'quit_app', 'new_window', 'close_window', 'close_tab', 'choose_menu', 'browse_url', 'play_media', 'type_text', 'press_key', 'scroll', 'open_settings_pane'):
             native_result = self.desktop.application_action(proposal) or {}
         elif kind == 'focus_app':
             self.desktop.activate(proposal['bundle_id'])
             self.desktop.collect_once()
         else:
             raise ValueError('That desktop action is not supported by the confirmed executor.')
-        if (kind not in ('launch_app', 'browse_url', 'click_point', 'drag', 'play_media', 'close_tab') and not (kind == 'new_window' and proposal.get('bundle_id') == 'com.apple.Safari') and not self.desktop.enabled) or self.desktop.generation != generation:
+        if (kind not in ('launch_app', 'browse_url', 'open_settings_pane', 'click_point', 'drag', 'play_media', 'close_tab') and not (kind == 'new_window' and proposal.get('bundle_id') == 'com.apple.Safari') and not self.desktop.enabled) or self.desktop.generation != generation:
             raise RuntimeError('The action may have been submitted, but app awareness was paused. Check the app before trying again.')
         after = self.desktop.context()
         return {'type': kind, 'native_result': native_result, 'remaining_request': proposal.get('remaining_request', ''), 'requested_url': proposal.get('url'),

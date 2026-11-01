@@ -63,7 +63,17 @@ tell application "Finder"
     try
         set columnName to name of sort column of list view options of w as text
     end try
-    return folderPath & linefeed & viewName & linefeed & columnName
+    -- Names only (at most five), never contents: what a selection click selected.
+    set picked to ""
+    try
+        set chosen to selection
+        repeat with i from 1 to (count of chosen)
+            if i > 5 then exit repeat
+            if i > 1 then set picked to picked & (character id 31)
+            set picked to picked & (name of item i of chosen)
+        end repeat
+    end try
+    return folderPath & linefeed & viewName & linefeed & columnName & linefeed & picked
 end tell
 end run"""
 
@@ -78,10 +88,14 @@ def finder_facts(snapshot):
     try:
         result = subprocess.run(['osascript', '-e', FINDER_FACTS_SCRIPT, bundle],
                                 capture_output=True, text=True, timeout=1)
-        lines = result.stdout.strip().splitlines()
-        if result.returncode == 0 and len(lines) >= 2:
+        out = result.stdout[:-1] if result.stdout.endswith('\n') else result.stdout  # osascript's own newline only
+        lines = out.split('\n')
+        if result.returncode == 0 and len(lines) >= 2 and lines[0]:
             outcome='available'
-            return dict(zip(('target', 'view', 'sort'), (line[:1024] for line in lines)))
+            facts = dict(zip(('target', 'view', 'sort'), (line[:1024] for line in lines)))
+            if len(lines) >= 4:
+                facts['selection'] = [name[:255] for name in lines[3].split('\x1f') if name][:5]
+            return facts
         if result.returncode:
             outcome='error'
     except subprocess.TimeoutExpired:
@@ -92,6 +106,43 @@ def finder_facts(snapshot):
         from .timing import timing
         timing('finder.facts',started,status=outcome)
     return {}
+
+
+SAFARI_COUNTS_SCRIPT = """on run argv
+if (item 1 of argv) is not "com.apple.Safari" then return ""
+if application "Safari" is not running then return ""
+tell application "Safari"
+    if (count of windows) is 0 then return ""
+    set w to front window
+    set b to bounds of w
+    return (id of w as text) & linefeed & (count of tabs of w as text) & linefeed & (item 1 of b as text) & linefeed & (item 2 of b as text) & linefeed & (item 3 of b as text) & linefeed & (item 4 of b as text)
+end tell
+end run"""
+
+
+def browser_counts(snapshot):
+    """Bounded counts only, bound to the observed Safari window. Never activates it."""
+    if sys.platform != 'darwin' or (snapshot.get('app') or {}).get('bundle_id') != 'com.apple.Safari':
+        return {}
+    bounds = (snapshot.get('window') or {}).get('bounds') or {}
+    import math
+    if not all(type(bounds.get(k)) in (int, float) and math.isfinite(bounds[k]) for k in ('x','y','width','height')) or min(bounds['width'],bounds['height']) <= 0:
+        return {}
+    try:
+        result = subprocess.run(['osascript','-e',SAFARI_COUNTS_SCRIPT,'com.apple.Safari'],
+                                capture_output=True,text=True,timeout=1)
+        if result.returncode:
+            return {}
+        parts = result.stdout.strip().splitlines()
+        if len(parts) != 6:
+            return {}
+        window_id,count,left,top,right,bottom = map(int,parts)
+        actual = (left,top,right-left,bottom-top)
+        if window_id <= 0 or not 1 <= count <= 10000 or any(abs(a-bounds[k])>2 for a,k in zip(actual,('x','y','width','height'))):
+            return {}
+        return dict(window_id=window_id,tab_count=count)
+    except (OSError,ValueError,subprocess.TimeoutExpired):
+        return {}
 
 
 class MacDesktopBridge:
@@ -121,6 +172,8 @@ class MacDesktopBridge:
                 raise RuntimeError('Could not build the macOS desktop bridge. Check Xcode Command Line Tools.')
 
     def call(self, *args):
+        from .eval_control import guard_native_test_call
+        guard_native_test_call(args)
         self.prepare()
         try:
             result = subprocess.run([str(self.binary), '--exclude-pid', str(os.getpid()), *args],
@@ -146,6 +199,9 @@ class MacDesktopBridge:
         facts = finder_facts(value)
         if facts:
             value['finder'] = facts
+        counts = browser_counts(value)
+        if counts:
+            value['browser'] = counts
         return value
 
     def request_access(self):
@@ -380,6 +436,14 @@ class DesktopContext:
             if not any(app['bundle_id'] == 'com.apple.Music' for app in self.installed_apps()):
                 raise ValueError('Music is not installed.')
             return dict(action, bundle_id='com.apple.Music', label='Find and play “'+action['query']+'” in Music')
+        if isinstance(action, dict) and action.get('type') == 'open_settings_pane':
+            # Navigation only: an exact pane identifier from the system's own catalog, never free text.
+            from .settings_panes import pane, BUNDLE_ID
+            entry = pane(action.get('pane')) if set(action) == {'type', 'pane'} else None
+            if entry is None:
+                raise ValueError('That System Settings pane is not in the catalog.')
+            return {'type': 'open_settings_pane', 'pane': entry['id'], 'bundle_id': BUNDLE_ID,
+                    'label': 'Open '+entry['name']+' in System Settings'}
         if isinstance(action, dict) and set(action) == {'type', 'bundle_id'} and action['type'] == 'launch_app':
             app = next((item for item in self.installed_apps() if item['bundle_id'] == action['bundle_id']), None)
             if app:
@@ -454,6 +518,16 @@ class DesktopContext:
                 raise RuntimeError('Input submission is uncertain. Check the app before retrying.')
             self.collect_once()
             return result
+        if kind == 'open_settings_pane':
+            current = self.authorize_action({'type': kind, 'pane': proposal.get('pane')})
+            try:
+                result = subprocess.run(['open', 'x-apple.systempreferences:'+current['pane']], capture_output=True, timeout=10)
+            except (OSError, subprocess.TimeoutExpired):
+                raise RuntimeError('System Settings could not open that pane.') from None
+            if result.returncode:
+                raise RuntimeError('System Settings could not open that pane.')
+            self.collect_once()
+            return {'submitted': True, 'verification_required': True}
         if kind == 'music_search':
             query = proposal.get('query')
             if not isinstance(query, str) or not query.strip() or len(query) > 300 or any(ord(c) < 32 for c in query):

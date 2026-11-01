@@ -44,6 +44,32 @@ def at_url(host, path=None):
     return check
 
 
+def dismiss_test_alerts():
+    """TextEdit answers no Apple Event while an alert is open. An earlier case's deleted fixture
+    ("The document “A11y test … packing.txt” could not be opened") blocked every later TextEdit setup
+    (30 s timeouts all day), and each timed-out open queued another alert. Only alerts naming an
+    A11y test file are dismissed; anything else stops the loop."""
+    if 'TextEdit' not in le.app_names():
+        return
+    for _ in range(12):
+        try:
+            text = osa('tell application "System Events" to tell process "TextEdit" to get value of static text 1 of window 1')
+        except Exception:  # noqa: BLE001 - no window, or no alert
+            return
+        if not re.search(r'“A11y test [^”]*” could not be opened', text or ''):
+            return
+        osa('tell application "System Events" to tell process "TextEdit" to click button "OK" of window 1')
+        time.sleep(0.5)
+
+
+def textedit_at(path, state=None):
+    """TextEdit returns a POSIX string; coercing that string to an alias can fail."""
+    actual=osa('tell application "TextEdit" to return path of front document')
+    if state is not None:
+        state.setdefault('_observed',{})['document_path']=actual
+    return le.same_path(actual,path)
+
+
 def build(window, count=30, seed=0):
     cases = []
     marker = 'A11y test %d' % time.time_ns()
@@ -127,7 +153,7 @@ end tell''', folder_name+' Info')
             request = f'Open the file called {marker} packing.txt from this Finder folder and tell me what it says to pack.'
             def check(s,e,state=state):
                 path = state['folder']/(marker+' packing.txt')
-                return path.read_text() == 'A11y test 314159\nPack the amber lantern.\n' and le.same_path(osa('tell application "TextEdit" to return POSIX path of (path of front document as alias)'),path) and 'amber lantern' in answer(e).casefold()
+                return path.read_text() == 'A11y test 314159\nPack the amber lantern.\n' and textedit_at(path,s) and 'amber lantern' in answer(e).casefold()
         case(name, [turn(name, request, 'Finder', check)], setup, [cleanup],
              'v3 Documents sort/date added; broad finder_downloads; v2 TextEdit typing')
 
@@ -198,10 +224,11 @@ end tell''', folder_name+' Info')
             state['root'] = root
             state['path'] = root/(marker+' '+name+'.txt')
             state['path'].write_text('')
+            dismiss_test_alerts()
             osa('tell application "TextEdit" to open POSIX file (item 1 of argv)', str(state['path']))
             le.activate('TextEdit')
         def check(s,e,state=state,content=content):
-            return le.same_path(osa('tell application "TextEdit" to return POSIX path of (path of front document as alias)'),state['path']) and osa('tell application "TextEdit" to return text of front document').strip() == content
+            return textedit_at(state['path'],s) and osa('tell application "TextEdit" to return text of front document').strip() == content
         def cleanup(state=state):
             try:
                 if state.get('path'):

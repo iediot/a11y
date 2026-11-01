@@ -197,7 +197,11 @@ class ScreenVision:
             raise ValueError('Screen vision was paused. No click was sent.')
         if proposal.get('type') != 'drag' and hasattr(desktop.bridge,'hit'):
             hit = desktop.bridge.hit(screen['x']+proposal['x']*screen['width'], screen['y']+proposal['y']*screen['height'])
+            from .eval_control import guard_native_test_call
+            guard_native_test_call(((hit or {}).get('app', ''), (hit or {}).get('owner', '')))
             if self.named_hit_conflict(proposal,hit):
+                if hit.get('role') == 'AXLink':
+                    raise ValueError('A different named link is under that point. No click was sent; ask for a fresh target.')
                 raise ValueError('A different file or menu command is under that point. No click was sent; ask for a fresh target.')
         result = desktop.bridge.drag(proposal, guard) if proposal.get('type') == 'drag' else desktop.bridge.click(proposal, guard)
         # How it clicked: "press" (accessibility, the user's pointer untouched), "focus", or "pointer" (borrowed, put back).
@@ -209,7 +213,7 @@ class ScreenVision:
 
     @staticmethod
     def named_hit_conflict(proposal, hit):
-        if not isinstance(hit,dict) or not (hit.get('finder_item') or hit.get('role')=='AXMenuItem'):
+        if not isinstance(hit,dict) or not (hit.get('finder_item') or hit.get('role') in ('AXMenuItem', 'AXLink')):
             return False
         import unicodedata
         actual=unicodedata.normalize('NFC',str(hit.get('title',''))).casefold().strip()

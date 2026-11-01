@@ -69,7 +69,7 @@ def test_reminders(marker):
     return parse_reminders(osa('''tell application "Reminders"
 set output to ""
 repeat with folder in lists
-    repeat with r in (every reminder of folder whose name starts with (item 1 of argv))
+    repeat with r in (every reminder of folder whose name contains (item 1 of argv))
         set rowText to (id of r as text) & tab & (name of r as text)
         set d to due date of r
         if d is not missing value then
@@ -82,13 +82,14 @@ return output
 end tell''', marker))
 
 def clean_items(marker, kind='notes'):
-    # Exact per-case prefix; never sweep the owner's other test items.
+    # The per-case marker (a unique long number) anywhere in the name: a whole-request title
+    # ("Put A11y test … in Reminders for …") was left behind by a prefix match. Never sweeps other items.
     if kind == 'notes':
-        osa('tell application "Notes" to delete (every note whose name starts with (item 1 of argv))', marker)
+        osa('tell application "Notes" to delete (every note whose name contains (item 1 of argv))', marker)
         return
     osa('''tell application "Reminders"
 repeat with folder in lists
-    delete (every reminder of folder whose name starts with (item 1 of argv))
+    delete (every reminder of folder whose name contains (item 1 of argv))
 end repeat
 end tell''', marker)
 

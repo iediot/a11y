@@ -239,6 +239,9 @@ Examples of acknowledging: "14" → "Got it: 14." "My name is Ana" → "Nice to 
 # Answers and reads: "will it be foggy?" after the weather is a new question, not the task again.
 TELLS_ONLY = frozenset(('answer', 'inspect_screen', 'inspect_media', 'read_mail', 'read_calendar', 'read_reminders',
                         'read_notes', 'find_contact', 'recent_files', 'read_page', 'list_shortcuts', 'system_info', 'weather', 'look_up'))
+ITEM_TITLE_SYSTEM = '''Name the item the user wants created: the reminder or event title exactly as they wrote it.
+Leave out the date, time, app name and instruction words ("put", "add", "remind me to", "called").
+If they gave no name, return an empty title.'''
 FOLLOW_UP_SYSTEM = '''A11y is an assistant that does things on the user's computer. last_task is
 the last thing the user asked it to do; latest is what they say now. If latest asks to do
 last_task again or a changed version of it (another site, app, file, word, person, time or
@@ -717,6 +720,29 @@ class Companion:
         timing('follow_up.resolved', time.monotonic(), words=len(resolved.split()))
         return resolved
 
+    def item_title(self, request):
+        """A new reminder's or event's title, chosen from the request's own words (an enum, so it is
+        copied exactly). The router wrote the whole request as the title, and the time phrase another
+        time; free text also dropped digits from a long test number (live, harder suite). '' if none."""
+        if not hasattr(self.provider, 'complete_structured'):
+            return ''
+        words = request.split()[:60]
+        spans = ['']
+        for start in range(len(words)):
+            for end in range(start+1, min(len(words), start+12)+1):
+                span = ' '.join(words[start:end]).strip('.,!?;:"“”\'')
+                if span and span not in spans:
+                    spans.append(span)
+        schema = {'type': 'object', 'additionalProperties': False, 'required': ['title'],
+                  'properties': {'title': {'enum': spans}}}
+        try:
+            reply = self.provider.complete_structured(ITEM_TITLE_SYSTEM, [{'role': 'user', 'content': request}],
+                                                      schema=schema, max_tokens=80, thinking=False)
+        except (RuntimeError, ValueError, OSError):
+            return ''
+        title = reply.get('title') if isinstance(reply, dict) else ''
+        return title if isinstance(title, str) and title in spans else ''
+
     def routed_in_code(self, request):
         """True for a request code routes by itself: open/close/switch to an app, click something."""
         if CLICK_REQUEST.match(request) or simple_app_command(request) is not None:
@@ -1009,6 +1035,11 @@ class Companion:
             if interpreted.get('operation') in mac_apps.OPERATIONS:
                 target = str(interpreted.get('target', ''))
                 when = str(interpreted.get('when', '')).strip()
+                if interpreted['operation'] in ('add_event', 'add_reminder'):
+                    title = self.item_title(request)
+                    if title:
+                        rest = target.partition('|')[2]
+                        target = title+(' |'+rest if rest else '')
                 if interpreted['operation'] in ('add_event', 'add_reminder') and when:
                     when = upcoming(stated_time(when, request), request)
                     # The time has its own field: packed into target, a small model often wrote

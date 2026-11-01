@@ -6,6 +6,35 @@ Finder, Safari/Chrome pages, Shortcuts) and does on-screen tasks (open apps, cli
 scroll). Python + PyQt6, with a Swift helper on macOS and native adapters on Windows.
 macOS first, Windows second: anything shared must keep working on both.
 
+## Current agent checkpoint (2026-10-30)
+
+Read [docs/ai/HANDOFF.md](docs/ai/HANDOFF.md) before acting; its newest checkpoint
+supersedes older status notes. [docs/ai/README.md](docs/ai/README.md) indexes the briefs.
+
+- **Current scroll build `2385a6e664`: 1,096 tests OK (1 skipped).** Direction
+  fixed with phased pixel gestures; latest half-window scroll distance/queue scope
+  changes are unit-tested but not yet live-qualified. Last full live result was
+  4/13 on the previous build. Next viewport-first Finder/Safari batch is prepared
+  under `.data/live_eval/scroll-navigation-live-20261030/`, NOT running. Read the
+  authoritative current HANDOFF checkpoint before launching anything.
+- **Arch CUDA pilot also failed qualification** (2026-10-29): operations
+  373→369/395, 30 critical regressions. No adoption/retraining. Qwen remains
+  default. See ARCH_TRAINING_HANDOFF.md and current HANDOFF for active tests.
+- **R3 qualification finished and failed the regression gate.** Artifacts:
+  `.data/live_eval/recursive-10/summary.json` and `r3/comparison.json`.
+  Operation improved 373→380/395, but action classification fell 358→349/395
+  with 18 critical regressions. Completion: 23/36, 0 FP/13 FN. Qwen remains
+  default; no adoption or automatic GUI tests. The fixed-build freeze is over.
+- **Owner's latest instruction:** let shell batches run independently. Do not keep
+  an agent turn alive with repeated polling, sleeps or status messages. End the
+  turn; check results when asked or on an available completion notification.
+- Qwen remains the default. R2 failed the regression gate. Holo2 is experimental:
+  24/39 versus Qwen 17/39 targets on the crowded offline diagnostic; this is not
+  end-to-end task success. Last complete unit run: **1,096 tests, OK (1 skipped)**.
+- Live suites require current screen availability. Never open Mail, Messages,
+  Photos, Contacts, Teams, WhatsApp or FaceTime in tests; never message anyone.
+  Existing uncommitted changes must be preserved. Commit/push only when asked.
+
 ## Current priority
 
 Make the **local** stack (Ollama, everything on this computer) capable, fast and
@@ -44,7 +73,7 @@ items. Claude Code works on this repo too (its notes are `CLAUDE.md`, kept in sy
 ```bash
 python3 -m pip install -r requirements.txt -r requirements-voice.txt   # voice is optional
 python3 a11y_desktop.py                         # run from source (data in .data/)
-QT_QPA_PLATFORM=offscreen python3 -m unittest discover -s tests -q   # 772 tests; requires native app and loopback access
+QT_QPA_PLATFORM=offscreen .venv/bin/python -m unittest discover -s tests -q   # last verified: 1,096 tests, 1 skipped; native app/loopback access required
 .venv/bin/python scripts/live_eval.py --runs 3  # real requests against a source run on this Mac
 packaging/build_macos.sh                        # → dist/A11y.app and dist/A11y-macOS.dmg
 dist/A11y.app/Contents/MacOS/A11y --self-test /tmp/self-test.json   # packaged-app check

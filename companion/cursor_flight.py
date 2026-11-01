@@ -172,6 +172,7 @@ class CursorFlight(QWidget):
         self.animation = None
         self.done = None
         self.formed = []  # run when she has grown back into her window
+        self._painted_bounds = QRectF()
 
     def set_colors(self, palette):
         """Her theme: the pointer in her window's dark colour, her text colour as its rim."""
@@ -238,7 +239,24 @@ class CursorFlight(QWidget):
 
     def step(self, value):
         self.progress = float(value)
-        self.update()
+        bounds = self.paint_bounds()
+        damage = bounds.united(self._painted_bounds).adjusted(-12,-12,12,12).toAlignedRect()
+        self._painted_bounds = bounds
+        self.update(damage.intersected(self.rect()))
+
+    def paint_bounds(self):
+        """The current visual footprint; old and new footprints both need clearing."""
+        if self.phase is None or self.points is None:
+            return QRectF()
+        tip = along(self.points,self.progress) if self.phase == 'travel' else self.first if self.phase == 'melt' else self.last
+        bounds = pointer_path(tip,CURSOR).boundingRect()
+        if self.phase == 'click':
+            bounds = bounds.united(QRectF(tip.x()-20,tip.y()-20,40,40))
+        elif self.phase == 'melt':
+            bounds = bounds.united(self.shrink(self.start_rect,self.first,ease(self.progress)))
+        elif self.phase == 'form':
+            bounds = bounds.united(self.shrink(self.end_rect,self.last,1-ease(self.progress)))
+        return bounds
 
     def finish(self):
         self.phase, self.animation = None, None

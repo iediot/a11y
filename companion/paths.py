@@ -39,7 +39,7 @@ def bundled_helper(name):
     return path if path.is_file() and os.access(path, os.X_OK) else None
 
 
-SETTINGS = ('model', 'vision_model', 'provider',  # provider: ollama (default) or claude
+SETTINGS = ('model', 'vision_model', 'gui_profile', 'gui_model', 'provider',  # provider: ollama (default) or claude
             'web_lookups',  # 'on' (default) or 'off': weather and facts looked up in the background
             'home_place')   # where "the weather" means when no place is named
 

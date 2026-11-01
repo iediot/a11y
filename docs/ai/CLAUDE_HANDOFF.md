@@ -1,5 +1,10 @@
 # A11y handoff for Claude
 
+> Historical architecture brief. Start with [the current handoff](HANDOFF.md) and
+> [agent index](README.md) for owner instructions, active jobs and measured results.
+> R3 qualification finished and failed its regression gate on 2026-10-28.
+> Qwen remains default. Source development has resumed; see the current handoff.
+
 ## Main instruction: support macOS AND Windows
 
 Extend this repository; do not rebuild the product or replace working components.

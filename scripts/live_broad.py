@@ -35,9 +35,18 @@ repeat with element in entire contents of front window
     try
         set output to output & (value of element as text) & linefeed
     end try
+    try
+        set output to output & (description of element as text) & linefeed
+    end try
 end repeat
 return output
 end tell''', app)
+
+
+def timer_fixture_is_idle(values):
+    """Require positive native UI evidence and no active/paused timer controls."""
+    return (bool(re.search(r'\b(?:Add|Start)\b', values))
+            and not re.search(r'\b(?:Cancel|Pause|Resume)\b', values))
 
 
 def selected(app, label):
@@ -172,8 +181,8 @@ end tell''', app, label)
         le.activate('Clock')
         keys('Clock','4')
         values = ax_values('Clock')
-        if re.search(r'\b(?:Cancel|Pause|Resume)\b', values):
-            raise RuntimeError('timer case requires no existing active or paused timers')
+        if not timer_fixture_is_idle(values):
+            raise RuntimeError('timer case requires verified idle Clock UI with no active or paused timers')
         timer['owned'] = True
     def timer_cleanup():
         if timer['owned']:

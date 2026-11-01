@@ -1118,6 +1118,7 @@ class CompanionWindow(QMainWindow):
 
     def clear_history(self):
         self.service.store.clear_history(self.service.identity)
+        self.mascot.input.clear_sent_history()
         self.transcript.clear()
         self.latest_response = ''
         self.read_btn.setEnabled(False)
@@ -1249,7 +1250,10 @@ class CompanionWindow(QMainWindow):
             if finished:
                 QTimer.singleShot(0, finished)
             return
-        end = QRect(position, start.size())
+        # QWidget.geometry/setGeometry use client coordinates; move()/pos()
+        # use the top-level frame position on native macOS/Windows windows.
+        frame_offset = start.topLeft() - self.mascot.pos()
+        end = QRect(position + frame_offset, start.size())
         reach = start.united(end)
         grow, settle = QEasingCurve(QEasingCurve.Type.InOutCubic), QEasingCurve(QEasingCurve.Type.OutCubic)
         def between(a, b, t):
@@ -1847,6 +1851,21 @@ class CompanionWindow(QMainWindow):
             form.addRow(title, field)
             self.connection_fields[key] = field
         details.addLayout(form)
+        from .gui_models import PROFILES
+        from .paths import saved_ai_settings
+        gui_saved = saved_ai_settings()
+        self.gui_profile = QComboBox()
+        self.gui_profile.setAccessibleName('Experimental local GUI profile')
+        for name, profile in PROFILES.items():
+            if profile.status != 'unsupported':
+                self.gui_profile.addItem(name + (' (experimental)' if profile.status == 'experimental' else ' (default)'), name)
+        self.gui_profile.setCurrentIndex(max(0, self.gui_profile.findData(gui_saved.get('gui_profile', 'qwen3-vl'))))
+        form.addRow('GUI profile', self.gui_profile)
+        self.gui_model = QLineEdit(gui_saved.get('gui_model', ''))
+        self.gui_model.setAccessibleName('Installed GUI Ollama model name')
+        form.addRow('GUI model (installed only)', self.gui_model)
+        details.addWidget(label('Experimental GUI models need owner-installed weights and a verified vision runtime. '
+                                'Qwen3-VL stays the default. New action policies require review.'))
         self.local_models = QComboBox()
         self.local_models.setAccessibleName('Installed local Ollama models')
         self.local_models.addItem(config.model or 'Find installed models…', config.model or None)
@@ -1942,9 +1961,15 @@ class CompanionWindow(QMainWindow):
         except ProviderError as e:
             self.connection_status.setText(str(e))
             return
+        gui_profile = self.gui_profile.currentData()
+        gui_model = self.gui_model.text().strip()
+        if gui_profile != 'qwen3-vl' and not gui_model:
+            self.connection_status.setText('Enter an installed GUI model name, or choose the default profile.')
+            return
         self.service.provider = OllamaProvider(AIConfig(base_url=config.base_url, model=config.model, vision_model=config.vision_model, timeout=120))
         from .paths import save_ai_settings
-        save_ai_settings(model=config.model, vision_model=config.vision_model, provider='ollama')
+        save_ai_settings(model=config.model, vision_model=config.vision_model, provider='ollama',
+                         gui_profile=gui_profile, gui_model=gui_model)
         self.connection_status.setText('Model saved. Ask me a question to test it.')
         self.refresh()
         self.mascot_home('Connection settings are ready. What would you like to work on?')

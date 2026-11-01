@@ -10,6 +10,24 @@ func emit(_ value: [String: Any]) {
         print(String(decoding: data, as: UTF8.self))
     }
 }
+// Programmatic scrolling is a bounded trackpad gesture, not a physical mouse wheel.
+// Wheel utilities may reverse/smooth unphased events and defeat the requested direction.
+func scrollDistance(windowHeight: Double) -> Int32? {
+    guard windowHeight.isFinite, windowHeight > 0 else { return nil }
+    // Keep overlap between observations without spending a model step per few rows.
+    return Int32(max(1, min(480, (windowHeight/2).rounded())))
+}
+func scrollPacket(direction: String, phase: CGScrollPhase, location: CGPoint, distance: Int32 = 60) -> CGEvent? {
+    guard ["up", "down"].contains(direction), [.began, .changed, .ended].contains(phase),
+          (1...480).contains(distance) else { return nil }
+    let delta: Int32 = phase == .changed ? (direction == "up" ? distance : -distance) : 0
+    guard let event = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1,
+                              wheel1: delta, wheel2: 0, wheel3: 0) else { return nil }
+    // CGScrollPhase and NSEvent.Phase have DIFFERENT raw values for changed/ended.
+    event.setIntegerValueField(.scrollWheelEventScrollPhase, value: Int64(phase.rawValue))
+    event.location = location
+    return event
+}
 func attr(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
     var value: CFTypeRef?
     return AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success ? value : nil
@@ -246,12 +264,26 @@ if let index = args.firstIndex(of: "--input"), index+1 < args.count {
         down.post(tap: .cghidEventTap); up.post(tap: .cghidEventTap)
     } else if kind == "scroll" {
         guard let direction = action["direction"] as? String, ["up", "down"].contains(direction),
-              let event = CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 1, wheel1: direction == "up" ? 6 : -6, wheel2: 0, wheel3: 0),
-              let rectangle = bounds(window), let x = rectangle["x"], let y = rectangle["y"], let width = rectangle["width"], let height = rectangle["height"] else {
+              let rectangle = bounds(window), let x = rectangle["x"], let y = rectangle["y"], let width = rectangle["width"], let height = rectangle["height"],
+              let distance = scrollDistance(windowHeight: height) else {
             emit(["error": "Unsupported scroll destination."]); exit(1)
         }
-        event.location = CGPoint(x: x+width/2, y: y+height/2)
-        event.post(tap: .cghidEventTap)
+        for phase in [CGScrollPhase.began, .changed, .ended] {
+            guard workspace.frontmostApplication?.bundleIdentifier == bundle,
+                  let currentWindow = element(attr(app, "AXFocusedWindow")), CFEqual(currentWindow, window),
+                  bounds(currentWindow) == expected,
+                  string(currentWindow, "AXTitle") == action["window_title"] as? String,
+                  let current = element(attr(app, "AXFocusedUIElement")),
+                  string(current, "AXSubrole") != "AXSecureTextField" else {
+                emit(["error": "Scroll focus changed; check the app before retrying."]); exit(1)
+            }
+            guard let event = scrollPacket(direction: direction, phase: phase,
+                                           location: CGPoint(x: x+width/2, y: y+height/2), distance: distance) else {
+                emit(["error": "Could not construct scroll event."]); exit(1)
+            }
+            event.post(tap: .cghidEventTap)
+            RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+        }
     } else { emit(["error": "Unsupported input operation."]); exit(1) }
     emit(["submitted": true, "verification_required": true]); exit(0)
 }
@@ -292,6 +324,16 @@ if let index = args.firstIndex(of: "--hit"), index+2 < args.count {
             result["title"] = string(found, "AXValue")
         }
     }
+    // Structural roles only: distinguish navigation in a settings sidebar/toolbar
+    // from controls that change settings. Never export parent titles or values.
+    var ancestorRoles: [String] = []
+    var ancestor = element(attr(found, "AXParent"))
+    for _ in 0..<10 {
+        guard let current = ancestor else { break }
+        ancestorRoles.append(string(current, "AXRole"))
+        ancestor = element(attr(current, "AXParent"))
+    }
+    result["ancestor_roles"] = ancestorRoles
     if string(found, "AXRole") == "AXDockItem", let url = attr(found, "AXURL") as? URL, let bundle = Bundle(url: url)?.bundleIdentifier {
         result["app"] = bundle  // the app this Dock icon opens
     }
@@ -1063,6 +1105,7 @@ if pressIndex == nil, args.contains("--targets"), let window, let frame = bounds
         "AXDisclosureTriangle", "AXMenuItem", "AXTextField", "AXTextArea", "AXSearchField", "AXComboBox", "AXSlider", "AXSwitch", "AXCell", "AXRow"]
     let fields: Set<String> = ["AXTextField", "AXTextArea", "AXSearchField", "AXComboBox"]
     var targets: [[String: Any]] = []
+    var pageURL: String? = nil  // Safari's window has no AXURL; its web area does
     var stack: [(AXUIElement, Int, Bool)] = [(window, 0, false)]  // the Bool: inside a web page
     var seen = 0
     let started = CFAbsoluteTimeGetCurrent()
@@ -1073,6 +1116,7 @@ if pressIndex == nil, args.contains("--targets"), let window, let frame = bounds
         if let box, !box.intersects(windowRect) { continue }  // the off-screen part of a page
         if string(node, "AXSubrole") == "AXSecureTextField" { continue }
         let role = string(node, "AXRole")
+        if role == "AXWebArea", pageURL == nil, let url = attr(node, "AXURL") as? URL { pageURL = String(url.absoluteString.prefix(1024)) }
         // Greyed-out controls are not offered: the model could not tell them from ones that work (owner).
         let filename = front.bundleIdentifier == "com.apple.finder" && (role == "AXTextField" || role == "AXStaticText") && finderItem(node)
         if (clickable.contains(role) || filename), let box, box.width >= 4, box.height >= 4, windowRect.contains(CGPoint(x: box.midX, y: box.midY)),
@@ -1099,6 +1143,10 @@ if pressIndex == nil, args.contains("--targets"), let window, let frame = bounds
         }
     }
     output["targets"] = targets
+    if let pageURL, var info = output["window"] as? [String: Any], info["url"] == nil {
+        info["url"] = pageURL
+        output["window"] = info
+    }
     // The app's menu bar titles (File, Edit, View…), for choose_menu.
     if let bar = element(attr(app, "AXMenuBar")) {
         output["menus"] = ((attr(bar, "AXChildren") as? [AXUIElement]) ?? []).map { string($0, "AXTitle") }.filter { !$0.isEmpty }.dropFirst().map { $0 }

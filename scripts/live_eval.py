@@ -1140,7 +1140,7 @@ def main():
     parser.add_argument('--only', action='append', help='run only requests containing this text (repeatable)')
     parser.add_argument('--out', default=str(ROOT/'.data'/'live_eval'))
     parser.add_argument('--compare', help='an earlier summary.json to show next to the results')
-    parser.add_argument('--suite', choices=('requests', 'navigation', 'varied', 'v2', 'v3', 'heldout', 'answers', 'conversation', 'broad', 'harder', 'features', 'capability', 'all'), default='requests',
+    parser.add_argument('--suite', choices=('requests', 'navigation', 'varied', 'v2', 'v3', 'heldout', 'answers', 'conversation', 'broad', 'harder', 'features', 'capability', 'grounding', 'all'), default='requests',
                         help='requests: the reported requests; navigation: getting somewhere by clicking; '
                              'varied: new random tasks across many apps every run')
     parser.add_argument('--tasks', type=int, default=14, help='varied suite: how many random tasks')
@@ -1159,7 +1159,7 @@ def main():
     print('build', build_id(), '→', out, flush=True)
     app = App(ROOT/'.data', out/'app.log')
     eval_window = EvalWindow()
-    if args.suite in ('conversation', 'broad', 'harder', 'features', 'capability'):
+    if args.suite in ('conversation', 'broad', 'harder', 'features', 'capability', 'grounding'):
         import importlib
         from live_conversation import run
         cases = importlib.import_module('live_'+args.suite).build(eval_window,seed=args.seed if args.seed is not None else 0)
@@ -1169,7 +1169,12 @@ def main():
         full_turns=sum(len(case['turns']) for case in cases)
         if args.max_turns:
             cases=[dict(case,turns=case['turns'][:args.max_turns]) for case in cases]
-        (out/'scope.json').write_text(json.dumps(dict(suite=args.suite,seed=args.seed if args.seed is not None else 0,full_turns=full_turns,
+        from companion.gui_models import selection
+        gui_profile, gui_model = selection()
+        from companion.ollama import OllamaProvider
+        eval_model_config = OllamaProvider().config
+        (out/'scope.json').write_text(json.dumps(dict(focused_grounding=os.getenv('A11Y_FOCUSED_GROUNDING','1'),runs=args.runs,case_turns={case['name']:len(case['turns']) for case in cases},gui_profile=gui_profile,gui_model=gui_model,
+            vision_model=eval_model_config.vision_model or eval_model_config.model,text_model=eval_model_config.model,suite=args.suite,seed=args.seed if args.seed is not None else 0,full_turns=full_turns,
             scheduled_turns=sum(len(case['turns']) for case in cases),max_turns=args.max_turns,only=ONLY),indent=2))
         return run(app, eval_window, out, cases, args.runs)
     if args.suite in ('v2', 'v3', 'heldout'):

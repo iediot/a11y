@@ -11,6 +11,12 @@
 
 </div>
 
+For coding agents: read [AGENTS.md](AGENTS.md), then the
+[current handoff](docs/ai/HANDOFF.md) and [agent documentation index](docs/ai/README.md)
+before changing code or launching tests/training. Active local jobs and experimental
+model results are documented there; they do not change the shipped model default.
+
+
 ---
 
 ## Overview

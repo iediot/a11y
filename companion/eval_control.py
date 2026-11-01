@@ -21,6 +21,20 @@ def enabled():
     return os.getenv('A11Y_EVAL', '').strip() == '1' and not frozen()
 
 
+# Owner's test restrictions: these apps must never be activated by a live model.
+PROHIBITED_TEST_APPS = frozenset({
+    'com.apple.mail', 'com.apple.MobileSMS', 'com.apple.Photos',
+    'com.apple.AddressBook', 'com.microsoft.teams', 'com.microsoft.teams2',
+    'net.whatsapp.WhatsApp', 'com.apple.FaceTime',
+})
+
+
+def guard_native_test_call(args):
+    """Fail before invoking the native helper; normal app use is unaffected."""
+    if enabled() and any(arg in PROHIBITED_TEST_APPS for arg in args):
+        raise RuntimeError('That application is prohibited during live evaluation.')
+
+
 TEST_MARKER = 'A11y test'  # only changes whose label carries it can be confirmed by the harness
 _shots = {'count': 0}
 
@@ -65,8 +79,38 @@ def step_shot(image_data, step, action=None, status='', *, observation=None, scr
     name = 'shot-%04d.jpg' % _shots['count']
     os.makedirs(folder, exist_ok=True)
     image.save(os.path.join(folder, name), 'JPG', 70)
+    if status == 'observed' and os.getenv('A11Y_EVAL_GROUNDING_EXPORT') == '1':
+        # Same-frame names/geometry only; no values, document paths or other windows.
+        with open(os.path.join(folder,name+'.json'),'w') as out:
+            json.dump({'image':name,'app':owner.get('name',''),'width':image.width(),'height':image.height(),
+                       'targets':grounding_targets(observation,screen,bounds)},out,indent=2)
     timing_module.timing('eval.shot', time.monotonic(), file=name, step=step, status=status,
                          action={key: action.get(key) for key in ('type', 'label', 'x', 'y', 'key', 'text', 'url', 'bundle_id', 'button', 'click_count') if key in action})
+
+
+def grounding_targets(observation, screen, window):
+    """Native boxes relative to a fully visible test window; no field values exported."""
+    import math
+    if not all(type(window.get(k)) in (int,float) and math.isfinite(window[k]) for k in ('x','y','width','height')):
+        return []
+    if min(window['width'],window['height'])<=0 or not screen:
+        return []
+    if not (screen['x']<=window['x'] and screen['y']<=window['y']
+            and window['x']+window['width']<=screen['x']+screen['width']
+            and window['y']+window['height']<=screen['y']+screen['height']):
+        return []  # clipped crops need a fresh observation, never invented geometry
+    result=[]
+    for target in (observation or {}).get('targets') or []:
+        label,b=target.get('label'),target.get('bounds') or {}
+        if (not isinstance(label,str) or not 1<len(label)<=240 or not target.get('enabled',True)
+                or not all(type(b.get(k)) in (int,float) and math.isfinite(b[k]) for k in ('x','y','width','height'))):
+            continue
+        left,top=(b['x']-window['x'])/window['width'],(b['y']-window['y'])/window['height']
+        right,bottom=left+b['width']/window['width'],top+b['height']/window['height']
+        if 0<=left<right<=1 and 0<=top<bottom<=1:
+            item={'label':label,'role':target.get('role',''),'box':[left,top,right,bottom]}
+            if item not in result:result.append(item)
+    return result
 
 
 def evidence_rect(bounds, screen, width, height):
@@ -228,7 +272,9 @@ class EvalControl:
             events, count = self.events[since:], len(self.events)
             quiet = now-max(self.last_change, self.idle_since or now)
         plan = window.service.last_request_plan or {}
-        mascot, area = window.mascot.geometry(), window.mascot.screen().availableGeometry()
+        # The window frame, title bar included: that is what she parks 16 px from the edge.
+        # The client rectangle sits a title bar lower, so every "top" corner read 44 px off.
+        mascot, area = window.mascot.frameGeometry(), window.mascot.screen().availableGeometry()
         return {
             'now': round(now, 3), 'idle': idle, 'quiet_for': round(quiet, 3) if idle else 0, 'events': events, 'event_count': count,
             'ready': {'app_awareness': window.desktop_monitor.enabled, 'screen_vision': window.vision.enabled},

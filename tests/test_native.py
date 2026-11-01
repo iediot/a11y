@@ -367,12 +367,18 @@ class NativeTests(unittest.TestCase):
                    {'type': 'press_key', 'key': 'enter'}]
         outputs = [{'status': 'action', 'message': 'Next step on fresh screen.', 'risk': 'navigation', 'action': action} for action in actions]
         outputs.append({'status': 'done', 'message': 'The requested result is visible.', 'risk': 'navigation', 'action': None})
+        outputs.append({'met': True, 'missing': '', 'evidence': 'Accessibility help'})
         class Provider:
             complete_structured = Mock(side_effect=outputs)
         self.service.provider = Provider()
         def submitted(proposal):
             return {'type': proposal['type'], 'label': proposal['label'], 'status': 'submitted'}
-        with patch.object(self.window.vision, 'capture', side_effect=lambda *args, **kwargs: deepcopy(frame)) as capture, patch('companion.desktop.ComputerUse.execute_confirmed', side_effect=submitted) as execute:
+        def captured(*args, **kwargs):
+            observed = deepcopy(frame)
+            if execute.call_count >= 4:
+                observed['text_regions'].append({'text': 'Accessibility help', 'x': .25, 'y': .6, 'width': .3, 'height': .1})
+            return observed
+        with patch.object(self.window.vision, 'capture', side_effect=captured) as capture, patch('companion.desktop.ComputerUse.execute_confirmed', side_effect=submitted) as execute:
             self.window.offer_computer_task('Find accessibility help')
             deadline = time.monotonic()+6
             while time.monotonic() < deadline:
@@ -399,7 +405,11 @@ class NativeTests(unittest.TestCase):
             self.assertEqual('The requested result is visible.', self.window.mascot.bubble.toPlainText())
             for call in self.service.provider.complete_structured.call_args_list:
                 self.assertIn('Find accessibility help', call.args[1][0]['content'])
-                self.assertTrue(call.kwargs['image_data'].startswith('data:image/png;base64,'))
+                from companion.computer_task import MET_SYSTEM
+                if call.args[0] == MET_SYSTEM:
+                    self.assertIsNone(call.kwargs.get('image_data'))
+                else:
+                    self.assertTrue(call.kwargs['image_data'].startswith('data:image/png;base64,'))
         self.assertIsNone(self.window.pending_desktop_action)
 
     def test_cloud_messages_and_history_record_the_same_task_text(self):
@@ -1116,9 +1126,17 @@ class NativeTests(unittest.TestCase):
         self.assertEqual(mascot.bubble.toPlainText(), message)  # screen readers get it all now
         self.assertTrue(mascot.typing.isActive())
         deadline = time.monotonic()+3
-        while mascot.typing.isActive() and time.monotonic() < deadline:
+        while mascot.typed == 0 and mascot.typing.isActive() and time.monotonic() < deadline:
             QTest.qWait(20)
+        self.assertGreater(mascot.typed, 0)  # the real Qt timeout is connected
+        # Drive the remaining ticks without depending on background event-loop speed.
+        for _ in range(len(message)+1):
+            if not mascot.typing.isActive():
+                break
+            mascot.type_more()
         self.assertEqual(mascot.typed, len(message))
+        self.assertFalse(mascot.typing.isActive())
+        self.assertEqual(mascot.bubble.toPlainText(), message)
         mascot.set_reduced_motion(True)
         mascot.present('Still.', compact=True)
         self.assertFalse(mascot.typing.isActive())
@@ -1132,6 +1150,15 @@ class NativeTests(unittest.TestCase):
             target = mascot.pos()-QPoint(300, 0)
             done, widest = [], [0]
             self.window.animate_companion_to(target, finished=lambda: done.append(1))
+            # Inspect the actual widget at the stretch peak. Under background CPU
+            # load Qt can skip that transient frame between wall-clock samples.
+            # Keep the real timer/finished signal for the remaining settle phase.
+            animation = self.window.move_animation
+            animation.pause()
+            animation.setCurrentTime(animation.duration()//2)
+            widest[0] = mascot.width()
+            self.assertTrue(mascot.stretching)
+            animation.resume()
             deadline = time.monotonic()+3
             while not done and time.monotonic() < deadline:
                 QTest.qWait(10)

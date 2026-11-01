@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from scripts.router_train_cuda import encode_row,pad_rows,data_hashes,validate_resume
+from scripts.router_train_cuda import encode_row,pad_rows,data_hashes,validate_resume,supervised_positions
 
 
 class Tokenizer:
@@ -60,3 +60,19 @@ class CudaDataTests(unittest.TestCase):
             before=data_hashes(root)
             (root/'test.jsonl').write_text('changed')
             self.assertNotEqual(before['test'],data_hashes(root)['test'])
+
+
+class SupervisedPositionsTests(unittest.TestCase):
+    def test_causal_shift_includes_first_answer_and_final_eos(self):
+        self.assertEqual(supervised_positions([[-100,-100,42,9]]), [1,2])
+
+    def test_batch_union_preserves_masked_padding_and_different_prompt_lengths(self):
+        rows=[[-100,-100,42,9,-100],[-100,7,8,9,10]]
+        positions=supervised_positions(rows)
+        self.assertEqual(positions,[0,1,2,3])
+        self.assertEqual([[r[i+1] for i in positions] for r in rows],
+                         [[-100,42,9,-100],[7,8,9,10]])
+
+    def test_unsupervised_and_malformed_batches_fail(self):
+        for rows in ([],[[]],[[-100,-100]],[[1],[1,2]]):
+            with self.assertRaises(ValueError): supervised_positions(rows)

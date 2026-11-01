@@ -1,8 +1,49 @@
 # Local router LoRA pilot
 
-No model inference or training was run while preparing these files. Nothing in
-`companion/` changes. Wait until the current live test is finished before running
-any inference/training commands below. All model loads are offline/cache-only.
+## Current status (2026-10-30)
+
+Read [the current handoff](../docs/ai/HANDOFF.md) before starting a job.
+R3 finished all 300 iterations and offline qualification; it failed the gate:
+operation 373→380/395, action classification 358→349/395, 18 critical regressions.
+Completion: 23/36 (0 FP/13 FN). Qwen remains default; no model was adopted.
+Do not restart the completed batch or historical pilot commands automatically.
+
+The subsequent Arch100-step CUDA pilot also completed parity, conversion/Q4
+transfer and paired406-row qualification, and FAILED: operations373→369/395,
+action flag358→354/395,30 critical regressions,0 parse errors. Separate alias
+`a11y-router-arch-pilot-test` is diagnostic only. No training job is queued; Qwen
+remains default. See [Arch handoff](../docs/ai/ARCH_TRAINING_HANDOFF.md) for pins
+and artifacts, and the current HANDOFF for native scrolling work. Do not retrain
+or repeat conversion because an older section calls it the next step.
+
+R3 uses a fresh rank-8 LoRA on 8 layers, at most 300 iterations, learning rate 3e-5,
+assistant-only loss, validation early stopping and a power guard. Its separate data
+snapshot uses `router_canonical_data.py` to match the observed Ollama 0.34 required-
+then-optional field order. Prompt/label values are preserved; held-out test bytes
+are unchanged. This is an experiment, not a proven improvement. Original data and
+R2 checkpoints are retained.
+
+The batch trains → fuses validation-best → converts/quantizes → registers
+`a11y-router-r3-test` → compares base/candidate through Ollama on the same 406 rows
+→ runs 36 completion diagnostics. No download, GUI test or default-model adoption
+is chained. All model loads are offline/cache-only, with background priority.
+
+- State: `.data/live_eval/recursive-10/progress.json` and `power.json`.
+- Training log: `.data/live_eval/recursive-10/r3/training.log`.
+- Final summary: `.data/live_eval/recursive-10/summary.json` (only after completion).
+- Clean stop: create `.data/live_eval/recursive-10/power.stop` **and**
+  `.data/live_eval/recursive-10/STOP`; verify stopped state before resuming other work.
+
+R2 is **not adopted**: operation 373/395 (same as base), app names 367/395 versus
+303/395, but targets/action flags regress and critical errors remain. Completion
+checks: 21/36 versus base 30/36. Low validation loss or a small scope-test pass is
+not enough. Qualification only permits further validation; it never proves live
+computer-task success.
+
+## Earlier pilot commands
+
+The recipes below explain the original pilot; they are not the active R3 command.
+Do not run them merely because an older note calls them the next step.
 
 Generate (offline, no models/apps):
 

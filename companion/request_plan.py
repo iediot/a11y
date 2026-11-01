@@ -168,7 +168,8 @@ def with_opening(plan, request):
     step (the opening) is executed without asking the model."""
     from .models import text
     opening = {key: plan.get(key, 'default' if key == 'browser_mode' else '') for key in OPENING_FIELDS} if plan['operation'] in OPENING_OPERATIONS else None
-    result = dict(plan, operation='computer_task', target=text(request, 'computer task', 2000), remaining_request='')
+    result = dict(plan, operation='computer_task', target=text(request, 'computer task', 2000), remaining_request='',
+                  referent='destination')
     if opening:
         result['opening'] = opening
         # This operation is now owned by the app/browser opening, rather than

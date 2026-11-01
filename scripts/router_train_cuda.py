@@ -40,6 +40,32 @@ def pad_rows(rows, pad):
     return result
 
 
+
+def supervised_positions(labels):
+    """Positions predicting supervised NEXT tokens, shared across padded batch rows."""
+    if not labels or not labels[0] or any(len(row) != len(labels[0]) for row in labels):
+        raise ValueError('Expected rectangular nonempty labels')
+    positions = [i for i in range(len(labels[0])-1)
+                 if any(row[i+1] != -100 for row in labels)]
+    if not positions:
+        raise ValueError('No supervised next tokens')
+    return positions
+
+
+def selected_answer_loss(model, inputs):
+    """Assistant-only causal loss without projecting unused prompt positions."""
+    import torch
+    labels = inputs['labels']
+    positions = torch.tensor(supervised_positions(labels.tolist()), device=labels.device)
+    outputs = model(**{key: value for key, value in inputs.items() if key != 'labels'},
+                    logits_to_keep=positions)
+    targets = labels[:, positions + 1]
+    loss = torch.nn.functional.cross_entropy(
+        outputs.logits.float().reshape(-1, outputs.logits.shape[-1]),
+        targets.reshape(-1), ignore_index=-100)
+    return loss, outputs
+
+
 def data_hashes(directory):
     return {name:hashlib.sha256((directory/(name+'.jsonl')).read_bytes()).hexdigest()
             for name in ('train','valid','test')}
@@ -149,8 +175,18 @@ def main():
         remove_unused_columns=False)
     def collate(rows):
         return {key:torch.tensor(value,dtype=torch.long) for key,value in pad_rows(rows,tokenizer.pad_token_id).items()}
-    trainer=Trainer(model=model,args=training,train_dataset=datasets['train'],eval_dataset=datasets['valid'],
+    class AnswerTrainer(Trainer):
+        def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+            # Qwen's vocabulary projection is large. Prompt logits have no loss,
+            # so project only positions predicting supervised answer/EOS tokens.
+            loss, outputs = selected_answer_loss(model, inputs)
+            return (loss, outputs) if return_outputs else loss
+
+    trainer=AnswerTrainer(model=model,args=training,train_dataset=datasets['train'],eval_dataset=datasets['valid'],
         processing_class=tokenizer,data_collator=collate,callbacks=[Progress(),EarlyStoppingCallback(early_stopping_patience=2)])
+    # Loss is a microbatch mean, as in the original trainer. Let Trainer scale
+    # gradient accumulation rather than treating it as an already summed loss.
+    trainer.model_accepts_loss_kwargs = False
     signal.signal(signal.SIGINT,request_stop)
     signal.signal(signal.SIGTERM,request_stop)
     trainer.train(resume_from_checkpoint=str(args.resume) if args.resume else None)

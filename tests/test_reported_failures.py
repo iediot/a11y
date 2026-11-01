@@ -165,10 +165,14 @@ class TeamsInspectionTests(Harness):
     def test_step_timing_is_recorded_without_screen_content(self):
         task = ComputerTask('check tasks', goal_mode='inspect')
         task.receipts.append({'type': 'press_control'})
-        self.provider.complete_structured.return_value = {'status': 'done', 'message': 'Private Teams text', 'risk': 'navigation', 'action': None}
+        self.regions = TEAMS_REGIONS+[region('No outstanding tasks', .3, .3)]
+        self.provider.complete_structured.side_effect = [
+            {'status': 'done', 'message': 'Private Teams text', 'risk': 'navigation', 'action': None},
+            {'met': True, 'missing': '', 'evidence': 'No outstanding tasks'},
+            {'message': 'Private Teams text'}]
         self.propose(task)
         stage = task.timings[-1]
-        self.assertEqual(stage['text_regions'], 5)
+        self.assertEqual(stage['text_regions'], 6)
         self.assertEqual([call['mode'] for call in stage['model']], ['image'])
         self.assertNotIn('Private', repr(stage))
 
@@ -219,10 +223,14 @@ class LiveTeamsLogTests(Harness):
         for _ in range(2):
             task.record({'type': 'click_point', 'label': 'Activity section with notification badge', 'status': 'submitted'})
         done = {'status': 'done', 'message': 'Activity lists 2 assignments due Friday.', 'risk': 'navigation', 'action': None}
-        self.provider.complete_structured.side_effect = [self.activity, done, {'message': 'Two assignments are due Friday.'}]
+        self.regions = TEAMS_REGIONS+[region('2 assignments due Friday', .3, .3, .3)]
+        self.provider.complete_structured.side_effect = [self.activity, done,
+            {'met': True, 'missing': '', 'evidence': '2 assignments due Friday'},
+            {'message': 'Two assignments are due Friday.'}]
         self.assertEqual(self.propose(task)['status'], 'done')
         self.assertIn('already ran twice', self.provider.complete_structured.call_args_list[1].args[1][-1]['content'])
-        self.provider.complete_structured.side_effect = [self.activity, self.activity]
+        self.provider.complete_structured.side_effect = [self.activity, self.activity,
+            {'status': 'needs_user', 'message': 'The requested result cannot be verified.', 'risk': 'navigation', 'action': None}]
         step = self.propose(task)
         self.assertEqual(step['status'], 'needs_user')
         self.assertIsNone(task.pending)
@@ -234,7 +242,13 @@ class LiveTeamsLogTests(Harness):
                 'action': {'type': 'click_point', 'x': .05, 'y': .21, 'label': 'Born 7 November 1867'}}
         for _ in range(2):
             task.record({'type': 'click_point', 'label': 'Born 7 November 1867', 'status': 'submitted'})
-        self.provider.complete_structured.side_effect = [born, {'message': 'Marie Curie was born in 1867.'}]
+        self.regions = [region('Marie Curie - Wikipedia', .3, .1, .3), region('Born 7 November 1867', .3, .3, .3)]
+        self.desktop.bridge.value.update(app={'name': 'Safari', 'bundle_id': 'com.apple.Safari'},
+            window=dict(self.desktop.bridge.value['window'], title='Marie Curie - Wikipedia', document='https://en.wikipedia.org/wiki/Marie_Curie'))
+        self.provider.complete_structured.side_effect = [born,
+            {'status': 'done', 'message': 'Marie Curie was born in 1867.', 'risk': 'navigation', 'action': None},
+            {'met': True, 'missing': '', 'evidence': 'Born 7 November 1867'},
+            {'message': 'Marie Curie was born in 1867.'}]
         step = self.propose(task)
         self.assertEqual((step['status'], step['message']), ('done', 'Marie Curie was born in 1867.'))
         self.assertIsNone(task.pending)
@@ -494,6 +508,22 @@ class LiveRoutingTests(unittest.TestCase):
         action = self.app.ask('dentist tomorrow at 3 for half an hour')['desktop_action']
         self.assertEqual(action['end']-action['start'], 30*60)
 
+    def test_a_reminder_title_is_copied_from_the_request_words(self):
+        # Live (harder suite): the router titled it with the whole request, then with the time phrase.
+        request = 'Put A11y test 1793364930750777000900 in Reminders for tomorrow at 8 in the morning.'
+        self.route('add_reminder', request, when='tomorrow at 8 in the morning')
+        self.provider.complete_structured.return_value = {'title': 'A11y test 1793364930750777000900'}
+        action = self.app.ask(request)['desktop_action']
+        self.assertEqual(action['title'], 'A11y test 1793364930750777000900')
+        call = self.provider.complete_structured.call_args
+        choices = call.kwargs['schema']['properties']['title']['enum']
+        self.assertIn('A11y test 1793364930750777000900', choices)
+        self.assertNotIn('A11y test 17933647000900', choices)  # free text once dropped digits
+        # A title that is not the request's own words is ignored; the router's stays.
+        self.route('add_reminder', 'call mom', when='2026-10-23T18:00')
+        self.provider.complete_structured.return_value = {'title': 'phone your mother'}
+        self.assertEqual(self.app.ask('remind me to call mom at 6')['desktop_action']['title'], 'call mom')
+
     def test_youtube_search_is_one_navigation_without_a_model(self):
         # The task opened YouTube, then clicked Safari's New Tab and address bar (live).
         response = self.app.ask('open youtube and search for lo-fi')
@@ -729,6 +759,7 @@ class ScreenAnswerTests(Harness):
         task.record({'type': 'click_point', 'label': 'Chat', 'status': 'submitted'})
         self.provider.complete_structured.side_effect = [
             {'status': 'done', 'message': 'Messages are visible.', 'risk': 'navigation', 'action': None},
+            {'met': True, 'missing': '', 'evidence': 'Ana Popescu mentioned you'},
             {'message': 'Ana Popescu mentioned you: the demo is due at 11.'}]
         self.assertEqual(self.propose(task)['message'], 'Ana Popescu mentioned you: the demo is due at 11.')
         answer = self.provider.complete_structured.call_args
@@ -742,6 +773,7 @@ class ScreenAnswerTests(Harness):
         task.record({'type': 'click_point', 'label': 'Chat', 'status': 'submitted'})
         self.provider.complete_structured.side_effect = [
             {'status': 'done', 'message': 'Two mentions from Ana.', 'risk': 'navigation', 'action': None},
+            {'met': True, 'missing': '', 'evidence': 'Ana Popescu mentioned you'},
 ProviderError('down')]
         self.assertEqual(self.propose(task)['message'], 'Two mentions from Ana.')
 
