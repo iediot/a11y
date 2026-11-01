@@ -2,8 +2,10 @@
 
 On macOS the windows use the system's own controls (the native "macos" style, light or dark
 as the system is) with a light grouped layout, like a SwiftUI settings form; menus are real
-macOS menus. Elsewhere they keep the custom dark look.
+macOS menus. On Windows they keep the custom dark look with Windows 11 accents: the Windows
+blue, Segoe UI and smaller corners. Elsewhere they keep the custom dark look.
 """
+import os
 import sys
 from PyQt6.QtGui import QColor, QPalette, QFontDatabase, QGuiApplication
 
@@ -12,12 +14,29 @@ def native_mac():
     return sys.platform == 'darwin' and QGuiApplication.platformName() == 'cocoa'
 
 
+def windows_look():
+    """Windows 11 styling: on Windows, or anywhere with A11Y_STYLE=windows (to preview it)."""
+    if native_mac():
+        return False
+    return sys.platform == 'win32' or os.getenv('A11Y_STYLE') == 'windows'
+
+
+WINDOWS_ACCENT = '#0078D4'
+WINDOWS_ACCENT_HOVER = '#1A86D9'
+WINDOWS_FONTS = ('Segoe UI Variable Text', 'Segoe UI')
+
+
 def apply_theme(app):
     if native_mac():
         app.setStyle('macos')
         return
     app.setStyle('Fusion')
-    app.setFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.GeneralFont))
+    font = QFontDatabase.systemFont(QFontDatabase.SystemFont.GeneralFont)
+    if windows_look():
+        family = next((name for name in WINDOWS_FONTS if name in QFontDatabase.families()), None)
+        if family:
+            font.setFamily(family)
+    app.setFont(font)
     palette = QPalette()
     colors = {
         QPalette.ColorRole.Window: '#1c1c1e', QPalette.ColorRole.WindowText: '#f5f5f7',
@@ -27,6 +46,8 @@ def apply_theme(app):
         QPalette.ColorRole.HighlightedText: '#ffffff', QPalette.ColorRole.PlaceholderText: '#a0a0a8',
         QPalette.ColorRole.ToolTipBase: '#343438', QPalette.ColorRole.ToolTipText: '#f5f5f7',
     }
+    if windows_look():
+        colors[QPalette.ColorRole.Highlight] = WINDOWS_ACCENT
     for role, color in colors.items():
         palette.setColor(role, QColor(color))
     for role in (QPalette.ColorRole.Text, QPalette.ColorRole.ButtonText):
@@ -106,5 +127,26 @@ QScrollArea > QWidget > QWidget {background:transparent;}
 '''
 
 
+def windows_style(style):
+    """The dark style with Windows 11 accents: the Windows blue and its smaller corners
+    (8px for surfaces and menus, 4px for controls)."""
+    for old, new in (('#0a84ff', WINDOWS_ACCENT), ('#2994ff', WINDOWS_ACCENT_HOVER), ('#3299ff', WINDOWS_ACCENT_HOVER),
+                     ('#64aaff', '#60CDFF'), ('#8bc2ff', '#60CDFF'), ('#285f9e', '#004C87')):
+        style = style.replace(old, new)
+    for old, new in (('18px', '8px'), ('12px', '8px'), ('10px', '4px'), ('9px', '4px')):
+        style = style.replace('border-radius:'+old, 'border-radius:'+new)
+    return style
+
+
+WINDOWS_MENU_STYLE = windows_style(MENU_STYLE)
+WINDOWS_PANEL_STYLE = windows_style(PANEL_STYLE)
+
+
+def menu_style():
+    return WINDOWS_MENU_STYLE if windows_look() else MENU_STYLE
+
+
 def panel_style():
-    return MAC_PANEL_STYLE if native_mac() else PANEL_STYLE
+    if native_mac():
+        return MAC_PANEL_STYLE
+    return WINDOWS_PANEL_STYLE if windows_look() else PANEL_STYLE

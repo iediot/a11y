@@ -6,9 +6,10 @@ to her right shows. Both are drawn in one frameless window, so they move togethe
 stacking never depends on the window manager. Colours and font follow the user's terminal
 (terminal_theme); faces come from faces.py and are interchangeable.
 """
+import math
 import os
 import sys
-from .theme import MENU_STYLE, native_mac
+from .theme import menu_style, native_mac, windows_look, WINDOWS_FONTS
 from . import faces, mac_window
 from .paths import resource_dir
 from .terminal_theme import palette as load_palette, saved_appearance
@@ -24,6 +25,9 @@ from PyQt6.QtGui import (QPainter, QPainterPath, QColor, QPen, QShortcut, QKeySe
 MARGIN = 10          # room for her shadow around the windows
 TITLE_HEIGHT = 28
 RADIUS = 11
+WINDOWS_RADIUS = 8   # Windows 11 window corners
+CAPTION_WIDTH = 34   # one Windows title-bar button
+HOVER_MS = 120       # Windows title-bar buttons fade their hover in and out
 WIDTH = 230          # her window, open or collapsed
 SEE_THROUGH = 0.82   # her windows show this much of the terminal's opacity: a bit more see-through
 REPLY_WIDTH = 280    # how far the reply window shows beside her
@@ -75,7 +79,7 @@ QWidget {{font-family:"{family}";font-size:{size}pt;color:{p.text};}}
 QWidget#mascotRoot {{background:transparent;}}
 QLabel {{background:transparent;}}
 QLabel#windowTitle {{font-weight:600;}}
-QLabel#replyTitle,QLabel#activityLabel,QLabel#detailLabel,QLabel#visionBadge {{color:{p.dim};font-size:{small}pt;}}
+{windows_title_style()}QLabel#replyTitle,QLabel#activityLabel,QLabel#detailLabel,QLabel#visionBadge {{color:{p.dim};font-size:{small}pt;}}
 QLabel#lastPrompt {{color:{p.dim};font-size:{small}pt;border:1px solid {rgba(p.border, 0.9)};border-radius:5px;padding:7px 9px;}}
 QLabel#promptMark {{color:{p.green};font-weight:600;}}
 QFrame#entryBox {{border:1px solid {rgba(p.border, 0.9)};border-radius:5px;background:transparent;}}
@@ -99,7 +103,15 @@ QScrollBar:vertical {{background:transparent;width:5px;margin:3px 0;}}
 QScrollBar::handle:vertical {{background:{rgba(p.dim, 0.5)};border-radius:2px;min-height:24px;}}
 QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical {{height:0;width:0;border:0;background:transparent;}}
 QScrollBar::add-page:vertical,QScrollBar::sub-page:vertical {{background:transparent;}}
-''' + ('' if native_mac() else MENU_STYLE)
+''' + ('' if native_mac() else menu_style())
+
+
+def windows_title_style():
+    """On Windows the title is in Segoe UI, regular weight, like other Windows title bars."""
+    if not windows_look():
+        return ''
+    family = next((name for name in WINDOWS_FONTS if name in QFontDatabase.families()), None)
+    return 'QLabel#windowTitle {font-weight:400;' + (f'font-family:"{family}";' if family else '') + '}\n'
 
 
 class RoundedMenu(QMenu):
@@ -111,14 +123,15 @@ class RoundedMenu(QMenu):
                             Qt.WindowType.NoDropShadowWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_MacShowFocusRect, False)
-        self.setStyleSheet(MENU_STYLE+'\nQMenu#companionMenu {background:transparent;border:0;padding:7px;}')
+        self.setStyleSheet(menu_style()+'\nQMenu#companionMenu {background:transparent;border:0;padding:7px;}')
 
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setPen(QPen(QColor('#48484e'), 1))
         painter.setBrush(QColor('#2c2c2e'))
-        painter.drawRoundedRect(QRectF(self.rect()).adjusted(.5, .5, -.5, -.5), 12, 12)
+        radius = WINDOWS_RADIUS if windows_look() else 12
+        painter.drawRoundedRect(QRectF(self.rect()).adjusted(.5, .5, -.5, -.5), radius, radius)
         painter.end()
         super().paintEvent(event)
 
@@ -223,6 +236,107 @@ class DotButton(QAbstractButton):
             painter.drawEllipse(QPointF(8, 8), 7.2, 7.2)
 
 
+class CaptionButton(QAbstractButton):
+    """A Windows 11 title-bar button: a flat glyph on the right of the title bar whose hover
+    background fades in and out. Close turns red on hover, as on Windows. Keyboard-focusable,
+    named for screen readers."""
+    CLOSE_RED = QColor('#C42B1C')
+
+    def __init__(self, kind, color, name, parent=None):
+        super().__init__(parent)
+        self.kind = kind  # 'menu', 'settings' or 'close'
+        self.color = QColor(color)  # the glyph's colour
+        self.corner = 0   # the window's corner radius, for the button in the top-right corner
+        self.hover = 0.
+        self.fade = QVariantAnimation(self)
+        self.fade.setDuration(HOVER_MS)
+        self.fade.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self.fade.valueChanged.connect(self.set_hover)
+        self.setFixedSize(CAPTION_WIDTH, TITLE_HEIGHT)
+        self.setAccessibleName(name)
+        self.setToolTip(name)
+        self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+
+    def set_hover(self, value):
+        self.hover = float(value)
+        self.update()
+
+    def fade_to(self, value):
+        self.fade.stop()
+        self.fade.setStartValue(self.hover)
+        self.fade.setEndValue(value)
+        self.fade.start()
+
+    def enterEvent(self, event):
+        self.fade_to(1.)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self.fade_to(0.)
+        super().leaveEvent(event)
+
+    def background(self):
+        if self.kind == 'close':
+            color = QColor(self.CLOSE_RED)
+            color.setAlphaF(self.hover*(0.8 if self.isDown() else 1.))
+        else:
+            color = QColor(self.color)
+            color.setAlphaF(self.hover*(0.07 if self.isDown() else 0.12))
+        return color
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = QRectF(self.rect())
+        if self.hover > 0:
+            path = QPainterPath()
+            if self.corner:  # keep the hover inside the window's rounded top-right corner
+                r = self.corner
+                path.moveTo(rect.topLeft())
+                path.lineTo(rect.right()-r, rect.top())
+                path.arcTo(QRectF(rect.right()-2*r, rect.top(), 2*r, 2*r), 90, -90)
+                path.lineTo(rect.bottomRight())
+                path.lineTo(rect.bottomLeft())
+                path.closeSubpath()
+            else:
+                path.addRect(rect)
+            painter.fillPath(path, self.background())
+        glyph = QColor(self.color)
+        if self.kind == 'close' and self.hover > 0:  # the glyph turns white with the red
+            white = QColor('white')
+            glyph = QColor.fromRgbF(*(a+(b-a)*self.hover for a, b in
+                                      zip(glyph.getRgbF()[:3], white.getRgbF()[:3])))
+        if not self.isEnabled():
+            glyph.setAlphaF(0.4)
+        painter.setPen(QPen(glyph, 1.1, cap=Qt.PenCapStyle.RoundCap, join=Qt.PenJoinStyle.RoundJoin))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        c = rect.center()
+        if self.kind == 'close':
+            d = 4.5
+            painter.drawLine(QPointF(c.x()-d, c.y()-d), QPointF(c.x()+d, c.y()+d))
+            painter.drawLine(QPointF(c.x()-d, c.y()+d), QPointF(c.x()+d, c.y()-d))
+        elif self.kind == 'menu':  # "more" ⋯
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(glyph)
+            for dx in (-5, 0, 5):
+                painter.drawEllipse(QPointF(c.x()+dx, c.y()), 1.15, 1.15)
+        else:  # settings: a gear
+            gear = QPainterPath()
+            teeth, outer, inner = 8, 6.2, 4.6
+            for i in range(teeth*4):
+                angle = i*360/(teeth*4)
+                radius = outer if i % 4 in (1, 2) else inner
+                point = QPointF(c.x()+radius*math.cos(math.radians(angle)), c.y()+radius*math.sin(math.radians(angle)))
+                gear.lineTo(point) if i else gear.moveTo(point)
+            gear.closeSubpath()
+            painter.drawPath(gear)
+            painter.drawEllipse(c, 1.9, 1.9)
+        if self.hasFocus():
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(QPen(QColor('#60CDFF'), 1.5))
+            painter.drawRoundedRect(rect.adjusted(2, 3, -2, -3), 4, 4)
+
+
 class Surface(QFrame):
     """A terminal window: rounded body, border and the line under its title strip. As her
     real macOS window (system=True) macOS draws the corners, border and shadow."""
@@ -245,7 +359,8 @@ class Surface(QFrame):
             painter.fillRect(QRectF(0, 0, self.width(), 1/self.devicePixelRatioF()), QColor('black'))
             return
         path = QPainterPath()
-        path.addRoundedRect(body, RADIUS, RADIUS)
+        radius = WINDOWS_RADIUS if windows_look() else RADIUS
+        path.addRoundedRect(body, radius, radius)
         painter.fillPath(path, background)
         painter.drawPath(path)
         painter.drawLine(QPointF(body.left(), TITLE_HEIGHT), QPointF(body.right(), TITLE_HEIGHT))
@@ -391,23 +506,41 @@ class Mascot(QWidget):
         self.title_bar = QWidget()
         self.title_bar.setFixedHeight(TITLE_HEIGHT)
         title = QHBoxLayout(self.title_bar)
-        title.setContentsMargins(9, 0, 10, 0)
-        title.setSpacing(2)
-        self.close_dot = DotButton(self.colors.red, 'Close the companion')
+        self.windows = windows_look()
+        if self.windows:
+            # Windows 11: the title on the left, flat buttons on the right (more, settings, close).
+            title.setContentsMargins(12, 1, 1, 0)
+            title.setSpacing(0)
+            self.close_dot = CaptionButton('close', self.colors.text, 'Close the companion')
+            self.menu_dot = CaptionButton('menu', self.colors.text, 'Companion actions')
+            self.prompt_settings = CaptionButton('settings', self.colors.text, 'Open companion settings')
+            self.close_dot.corner = WINDOWS_RADIUS-1
+        else:
+            title.setContentsMargins(9, 0, 10, 0)
+            title.setSpacing(2)
+            self.close_dot = DotButton(self.colors.red, 'Close the companion')
+            self.menu_dot = DotButton(self.colors.yellow, 'Companion actions')
+            self.prompt_settings = DotButton(self.colors.green, 'Open companion settings')
         self.close_dot.clicked.connect(lambda: self.action_requested.emit('quit'))
-        self.menu_dot = DotButton(self.colors.yellow, 'Companion actions')
         self.menu_dot.clicked.connect(lambda: self.show_menu())
-        self.prompt_settings = DotButton(self.colors.green, 'Open companion settings')
         self.prompt_settings.clicked.connect(self.opened)
-        for dot in (self.close_dot, self.menu_dot, self.prompt_settings):
-            title.addWidget(dot)
+        buttons = (self.close_dot, self.menu_dot, self.prompt_settings)
+        for dot in buttons:
             dot.setVisible(not self.native)
-        # The real traffic lights sit here on macOS.
-        title.addSpacing(66 if self.native else 8)
         self.window_title = QLabel('a11y')
         self.window_title.setObjectName('windowTitle')
-        title.addWidget(self.window_title)
-        title.addStretch()
+        if self.windows:
+            title.addWidget(self.window_title)
+            title.addStretch()
+            for button in (self.menu_dot, self.prompt_settings, self.close_dot):
+                title.addWidget(button)
+        else:
+            for dot in buttons:
+                title.addWidget(dot)
+            # The real traffic lights sit here on macOS.
+            title.addSpacing(66 if self.native else 8)
+            title.addWidget(self.window_title)
+            title.addStretch()
         frame.addWidget(self.title_bar)
         # On macOS the real title bar (traffic lights, "a11y" in the middle) replaces this one.
         self.title_bar.setVisible(not self.native)
@@ -526,8 +659,9 @@ class Mascot(QWidget):
         self.mono = monospace_font(self.colors.font, self.colors.font_size)
         self.setFont(self.mono)
         self.setStyleSheet(mascot_style(self.colors, self.mono.family(), round(self.mono.pointSizeF(), 1)))
-        for dot, color in ((self.close_dot, self.colors.red), (self.menu_dot, self.colors.yellow),
-                           (self.prompt_settings, self.colors.green)):
+        dot_colors = ((self.colors.text,)*3 if self.windows else
+                      (self.colors.red, self.colors.yellow, self.colors.green))
+        for dot, color in zip((self.close_dot, self.menu_dot, self.prompt_settings), dot_colors):
             dot.color = QColor(color)
             dot.update()
         self.character.set_font(self.mono)
