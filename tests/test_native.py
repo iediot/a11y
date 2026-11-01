@@ -1033,10 +1033,14 @@ class NativeTests(unittest.TestCase):
         self.assertLess(input_pos.x()+input_size.width(), send_pos.x())
         self.assertLessEqual(send_pos.x()+send_size.width(), entry_pos.x()+entry_size.width())
         self.assertLess(character_pos.y()+character_size.height(), entry_pos.y())
-        self.assertAlmostEqual(character_pos.x()+character_size.width()/2, frame.center().x(), delta=1,
-                               msg=f'face {character_size.width()}px in a {frame.width()}px window; font '
-                                   f'{mascot.character.font_.family()!r} {mascot.character.font_.pointSizeF()}pt, '
-                                   f'cell {mascot.character.cell.width()}x{mascot.character.cell.height()}')
+        # Centring needs a real monospace font. Qt's offscreen platform on Windows has none (it
+        # falls back to a 'monospace' alias with 17px cells), so there the face is wider than her window.
+        from PyQt6.QtGui import QFontDatabase
+        if mascot.character.font_.family() in QFontDatabase.families():
+            self.assertAlmostEqual(character_pos.x()+character_size.width()/2, frame.center().x(), delta=1,
+                                   msg=f'face {character_size.width()}px in a {frame.width()}px window; font '
+                                       f'{mascot.character.font_.family()!r} {mascot.character.font_.pointSizeF()}pt, '
+                                       f'cell {mascot.character.cell.width()}x{mascot.character.cell.height()}')
         self.assertEqual(len([b for b in mascot.findChildren(QPushButton) if b.isVisible()]), 1)
         # The input grows a line at a time, up to PROMPT_LINES, and back.
         height = mascot.height()
