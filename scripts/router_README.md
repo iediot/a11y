@@ -1,20 +1,31 @@
 # Local router LoRA pilot
 
-## Current status (2026-10-30)
+## Current status (2026-11-01)
 
-Read [the current handoff](../docs/ai/HANDOFF.md) before starting a job.
-R3 finished all 300 iterations and offline qualification; it failed the gate:
-operation 373→380/395, action classification 358→349/395, 18 critical regressions.
-Completion: 23/36 (0 FP/13 FN). Qwen remains default; no model was adopted.
-Do not restart the completed batch or historical pilot commands automatically.
+Read [the current handoff](../docs/ai/HANDOFF.md) before starting a job. No training job is
+queued and no candidate was adopted; Qwen remains default. Do not restart the completed batches
+or historical pilot commands below automatically.
 
-The subsequent Arch100-step CUDA pilot also completed parity, conversion/Q4
-transfer and paired406-row qualification, and FAILED: operations373→369/395,
-action flag358→354/395,30 critical regressions,0 parse errors. Separate alias
-`a11y-router-arch-pilot-test` is diagnostic only. No training job is queued; Qwen
-remains default. See [Arch handoff](../docs/ai/ARCH_TRAINING_HANDOFF.md) for pins
-and artifacts, and the current HANDOFF for native scrolling work. Do not retrain
-or repeat conversion because an older section calls it the next step.
+- R3 finished all 300 iterations and offline qualification, and failed the gate: operation
+  373→380/395, action classification 358→349/395, 18 critical regressions; completion 23/36
+  (0 FP/13 FN).
+- The Arch 100-step CUDA pilot failed too: operations 373→369/395, action flag 358→354/395,
+  30 critical regressions, 0 parse errors. Alias `a11y-router-arch-pilot-test` is diagnostic only.
+  Pins and artifacts: [Arch handoff](../docs/ai/ARCH_TRAINING_HANDOFF.md).
+
+**Held-out router set.** `tests/data/router_heldout.jsonl` has 165 hand-labelled requests that
+are not in this corpus, any prompt, the tests or the live suites (`tests/test_router_heldout.py`
+checks that, and that each one reaches the router rather than a code-first rule). Rows carry
+earlier user requests and router context (`now`, `front_app`, observed controls); only the
+fields in `expect` are scored. Run it against local Ollama, or score saved plans:
+
+```bash
+.venv/bin/python scripts/router_heldout.py --output .data/live_eval/router-heldout.json
+.venv/bin/python scripts/router_heldout.py --predictions plans.jsonl --category inspect_vs_change
+```
+
+Keep it out of training data and prompts; a fix that only works for its exact wording is not
+a fix.
 
 R3 uses a fresh rank-8 LoRA on 8 layers, at most 300 iterations, learning rate 3e-5,
 assistant-only loss, validation early stopping and a power guard. Its separate data

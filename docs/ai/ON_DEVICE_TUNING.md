@@ -10,10 +10,12 @@ locally in this repository.
 Text calls (understanding requests, chat) and image calls (computer use) use
 separate models, so a small fast text model can sit next to a vision model:
 
-| Role | Env variable | Try first | Faster option | Current |
-|---|---|---|---|---|
-| Text: routing, chat | `A11Y_AI_MODEL` | `qwen3:4b-instruct` | `qwen3:1.7b` | `qwen3-vl:8b-instruct` |
-| Vision: computer use | `A11Y_VISION_MODEL` | `qwen3-vl:4b-instruct` | `qwen3-vl:2b-instruct` | `qwen3-vl:8b-instruct` |
+| Role | Env variable | Default | Low-memory default / faster option |
+|---|---|---|---|
+| Text: routing, chat | `A11Y_AI_MODEL` | `qwen3:4b-instruct` | `qwen3:1.7b` |
+| Vision: computer use | `A11Y_VISION_MODEL` | `qwen3-vl:4b-instruct` | `qwen3-vl:2b-instruct` |
+
+The setup window picks these (`companion/installer.py`); choices are saved in `<data>/ai.json`.
 
 Tags change; confirm with `ollama pull <name>` (an unknown tag fails with an error)
 and `ollama list`. Keep a Qwen VL model for vision: the task loop asks for click
@@ -41,8 +43,8 @@ export A11Y_MODEL_IMAGE_WIDTH=1280     # Ollama upscales smaller images to ~1024
 export A11Y_OLLAMA_KEEP_ALIVE=30m
 ```
 
-Check the log after every change: `/private/tmp/a11y-desktop.log`. The first line of a
-run shows the build ID; `task.step.summary` lines show where each step's time goes
+Check the log after every change: a source run prints to its terminal, the packaged app writes
+`~/Library/Application Support/A11y/a11y.log`. The first line of a run shows the build ID; `task.step.summary` lines show where each step's time goes
 and `ollama.finished` lines show `prompt_eval_count`/`prompt_eval_ms` per call.
 
 ## Prompt for a local coding agent
@@ -51,11 +53,11 @@ Copy this into Codex or Claude Code opened in this repository on your Mac:
 
 ```text
 You are working in the A11y repository on my Mac (Apple Silicon) with Ollama
-installed. Read docs/ai/CLAUDE_HANDOFF.md and docs/ai/ON_DEVICE_TUNING.md first.
+installed. Read AGENTS.md (or CLAUDE.md), docs/ai/HANDOFF.md and docs/ai/ON_DEVICE_TUNING.md first.
 Goal: make computer-use tasks fast and reliable on THIS machine, measured, not guessed.
 
 1. Confirm the running code: quit A11y, relaunch it, and check that the build ID
-   on the first line of /private/tmp/a11y-desktop.log matches
+   on the first line of the log (terminal, or ~/Library/Application Support/A11y/a11y.log) matches
    `python -c "import companion.instance as i; print(i.build_id())"`.
 2. Baseline: run `python scripts/benchmark_pipeline.py --runs 5` with the current
    models and save the JSON. It never executes actions.
