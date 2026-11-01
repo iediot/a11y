@@ -3,7 +3,8 @@
 > Historical architecture brief. Start with [the current handoff](HANDOFF.md) and
 > [agent index](README.md) for owner instructions, active jobs and measured results.
 > R3 qualification finished and failed its regression gate on 2026-10-28.
-> Qwen remains default. Source development has resumed; see the current handoff.
+> Qwen remains default. Current results: [HANDOFF.md](HANDOFF.md); dated history:
+> [HANDOFF_ARCHIVE_2026-10.md](HANDOFF_ARCHIVE_2026-10.md).
 
 ## Main instruction: support macOS AND Windows
 
@@ -54,7 +55,9 @@ optional speech output, explicit accessibility preferences and desktop guidance.
 - The application is desktop-only; no separate backend is required.
 - Default data directory: `.data/`, configurable with `A11Y_DATA_DIR`.
 - Windows launcher uses a local Windows venv and `%LOCALAPPDATA%\A11y`.
-- Current local model used by the user: `qwen3-vl:8b-instruct` via Ollama.
+- Default local models (Ollama): `qwen3:4b-instruct` for text and `qwen3-vl:4b-instruct` for
+  vision (`qwen3:1.7b` / `qwen3-vl:2b-instruct` on low-memory machines; `companion/installer.py`).
+  The `qwen3-vl:8b-instruct` measurements below are from before that change.
 - Keep provider/model configuration in environment variables/settings. No embedded
   API keys, automatic cloud fallback or unrequested model downloads.
 
@@ -306,17 +309,17 @@ the startup build ID in the log with `companion.instance.build_id()` when uncert
 
 ```sh
 # macOS, foreground (useful while debugging)
-A11Y_AI_PROVIDER=ollama A11Y_AI_MODEL=qwen3-vl:8b-instruct .venv/bin/python a11y_desktop.py
+A11Y_AI_PROVIDER=ollama .venv/bin/python a11y_desktop.py
 
-# App logs when using the user's nohup launcher
-tail -f /private/tmp/a11y-desktop.log
+# A source run logs to its terminal; the packaged app writes
+tail -f ~/Library/Application\ Support/A11y/a11y.log
 
 # Automated checks
 QT_QPA_PLATFORM=offscreen .venv/bin/python -m unittest discover -s tests -q
 .venv/bin/python -m compileall -q companion scripts a11y_desktop.py
 
 # Stage latency on this machine (real capture/OCR/model; never executes actions)
-A11Y_AI_MODEL=qwen3-vl:8b-instruct .venv/bin/python scripts/benchmark_pipeline.py --runs 5
+.venv/bin/python scripts/benchmark_pipeline.py --runs 5
 
 # Synthetic model evaluation; does not operate the actual desktop
 .venv/bin/python scripts/evaluate_computer_tasks.py --model qwen3-vl:8b-instruct

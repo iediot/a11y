@@ -6,34 +6,23 @@ Finder, Safari/Chrome pages, Shortcuts) and does on-screen tasks (open apps, cli
 scroll). Python + PyQt6, with a Swift helper on macOS and native adapters on Windows.
 macOS first, Windows second: anything shared must keep working on both.
 
-## Current agent checkpoint (2026-10-30)
+## Current agent checkpoint (2026-11-01)
 
-Read [docs/ai/HANDOFF.md](docs/ai/HANDOFF.md) before acting; its newest checkpoint
-supersedes older status notes. [docs/ai/README.md](docs/ai/README.md) indexes the briefs.
+Read [docs/ai/HANDOFF.md](docs/ai/HANDOFF.md) before acting: one short current checkpoint (history
+is in `docs/ai/HANDOFF_ARCHIVE_2026-10.md`). [docs/ai/README.md](docs/ai/README.md) indexes the briefs.
 
-- **Current scroll build `2385a6e664`: 1,096 tests OK (1 skipped).** Direction
-  fixed with phased pixel gestures; latest half-window scroll distance/queue scope
-  changes are unit-tested but not yet live-qualified. Last full live result was
-  4/13 on the previous build. Next viewport-first Finder/Safari batch is prepared
-  under `.data/live_eval/scroll-navigation-live-20261030/`, NOT running. Read the
-  authoritative current HANDOFF checkpoint before launching anything.
-- **Arch CUDA pilot also failed qualification** (2026-10-29): operations
-  373→369/395, 30 critical regressions. No adoption/retraining. Qwen remains
-  default. See ARCH_TRAINING_HANDOFF.md and current HANDOFF for active tests.
-- **R3 qualification finished and failed the regression gate.** Artifacts:
-  `.data/live_eval/recursive-10/summary.json` and `r3/comparison.json`.
-  Operation improved 373→380/395, but action classification fell 358→349/395
-  with 18 critical regressions. Completion: 23/36, 0 FP/13 FN. Qwen remains
-  default; no adoption or automatic GUI tests. The fixed-build freeze is over.
-- **Owner's latest instruction:** let shell batches run independently. Do not keep
-  an agent turn alive with repeated polling, sleeps or status messages. End the
-  turn; check results when asked or on an available completion notification.
-- Qwen remains the default. R2 failed the regression gate. Holo2 is experimental:
-  24/39 versus Qwen 17/39 targets on the crowded offline diagnostic; this is not
-  end-to-end task success. Last complete unit run: **1,096 tests, OK (1 skipped)**.
-- Live suites require current screen availability. Never open Mail, Messages,
-  Photos, Contacts, Teams, WhatsApp or FaceTime in tests; never message anyone.
-  Existing uncommitted changes must be preserved. Commit/push only when asked.
+- **Last measured build `e47962fab5`: units 1,143 tests OK; Finder/Safari 13-turn set 13/13;
+  harder suite 20/30.** Remaining harder failures and TextEdit harness trouble are listed in HANDOFF.
+- Qwen remains the default. Every router fine-tune so far (R2, R3, Arch CUDA pilot) failed its
+  regression gate; nothing was adopted. Holo2 is experimental only.
+- Router held-out set: `tests/data/router_heldout.jsonl` (165 hand-labelled requests, never trained
+  on or prompted with), scored by `scripts/router_heldout.py` against local Ollama. No baseline yet.
+- **Owner's latest instruction:** let shell batches run independently. Do not keep an agent turn
+  alive with repeated polling, sleeps or status messages. End the turn; check results when asked
+  or on an available completion notification.
+- Live suites require current screen availability. Never open Mail, Messages, Photos, Contacts,
+  Teams, WhatsApp or FaceTime in tests; never message anyone. Existing uncommitted changes must be
+  preserved. Commit/push only when asked.
 
 ## Current priority
 
@@ -74,8 +63,9 @@ other contributor's: verify it, test it, and keep the ground rules.
 ```bash
 python3 -m pip install -r requirements.txt -r requirements-voice.txt   # voice is optional
 python3 a11y_desktop.py                         # run from source (data in .data/)
-QT_QPA_PLATFORM=offscreen .venv/bin/python -m unittest discover -s tests -q   # last verified: 1,096 tests, 1 skipped; native app/loopback access required
+QT_QPA_PLATFORM=offscreen .venv/bin/python -m unittest discover -s tests -q   # last verified on a Mac: 1,143 tests OK; native app/loopback access required
 .venv/bin/python scripts/live_eval.py --runs 3  # real requests against a source run on this Mac
+.venv/bin/python scripts/router_heldout.py      # score the router on tests/data/router_heldout.jsonl (local Ollama)
 packaging/build_macos.sh                        # → dist/A11y.app and dist/A11y-macOS.dmg
 dist/A11y.app/Contents/MacOS/A11y --self-test /tmp/self-test.json   # packaged-app check
 ```
@@ -91,10 +81,12 @@ which tries these in order and stops at the first that applies:
 
 1. arithmetic / clock (`arithmetic.py`) → answered in code
 2. "never mind" / "no" → drops the pending proposal
-3. "read my (second) last email" → `mail_reader.py` (AppleScript), full text, no model
+3. "read my (second) last email" → `mail_reader.py` (AppleScript), full text, no model;
+   "how many unread emails?" → Mail counts them
 4. "move to the left / top right" → moves the mascot (MOVE_SELF)
 5. bare verb ("Open.", "Click.") → asks "Open what?"
-6. "click / tap / double-click X" → computer task (CLICK_REQUEST)
+6. "click / tap / double-click X" → computer task (CLICK_REQUEST); "close this tab" with a
+   browser in front → `close_tab`
 7. "close / quit / switch to X" with one running match → `simple_app_command`
 8. "open X" → `quick_open.plan` (installed app → known web app → web search);
    a bare app name ("Microsoft Teams.") → `quick_open.bare_name` (exact names only)
@@ -126,10 +118,11 @@ its own short prompt (`SCREEN_SYSTEM`). Multi-step goals run in
 instant). Before the model, code takes the steps it can do exactly: Calculator keys, the
 Activity view for notification goals, a click on the one place labelled X ("click on Chat",
 from the accessibility tree or OCR), and the nth row of a list ("click the first email",
-from the bridge's `lists`). `press_control` may only name a control in the current
+from the bridge's `lists`), and a System Settings pane by its ID (`open_settings_pane`, from the
+catalog in `settings_panes.py`). `press_control` may only name a control in the current
 observation (the schema's enum). Each step reads the window's clickable targets
 (`DesktopBridge --targets`: buttons, links, tabs, fields, rows, named icons, web pages
-included; names only, never values) and numbers them with the OCR lines no target covers
+included, with the page address; names only, never values) and numbers them with the OCR lines no target covers
 (`screen_marks`); the model answers `click_target` with a number and code clicks its center.
 Pixel `click_point` remains for things neither lists. Enter in a search field needs no
 confirmation in a read-only goal; elsewhere it still does. Measured (Ollama 0.34): prompt
@@ -147,7 +140,7 @@ Windows capture) and are never written to disk.
 | Routing, schemas, validation | `service.py`, `request_plan.py`, `models.py`, `quick_open.py`, `app_names.py`, `web_apps.py` |
 | Models | `ollama.py` (default, local), `claude.py` (opt-in cloud), `provider.py` (shared configuration, errors and redirect protection) |
 | Mac apps in code | `mac_apps.py`, `mail_reader.py`, EventKit in `native/DesktopBridge.swift` |
-| Computer use | `computer_task.py`, `computer_use.py`, `desktop_context.py`, `vision.py`, `windows_*.py` |
+| Computer use | `computer_task.py`, `computer_use.py`, `desktop_context.py`, `settings_panes.py`, `vision.py`, `windows_*.py` |
 | Voice | `voice.py` (faster-whisper, tiny.en wake + small.en), `neural_voice.py` (Kokoro) |
 | Setup & explicit preferences | `onboarding.py`, `preferences.py`, `setup_ui.py` |
 | Consent & storage | `access.py`, `storage.py`, `paths.py` (data dir, saved AI settings) |
@@ -204,9 +197,13 @@ page, Mail's selection, Calendar, the mascot's position) and writes `runs.jsonl`
 `summary.json` under `.data/live_eval/`. `--only TEXT` picks requests, `--compare` an earlier
 summary. `--suite navigation` runs "take me there" tasks (Settings panes, Finder folders,
 websites) checked by window title, Settings' pane header (OCR) or Safari's address; `--suite all`
-runs both. Ollama runs greedy with a fixed seed, so repeated runs should match; a request that
+runs requests, navigation, answers and varied; `harder`, `features`, `capability`, `conversation`,
+`broad` and the rest run one at a time. Ollama runs greedy with a fixed seed, so repeated runs should match; a request that
 passes sometimes is a bug to chase. It needs the terminal's Accessibility, Screen Recording,
 Automation and (for the reminders case) Reminders permissions, and it takes over the screen.
+The router alone is scored without the screen by `scripts/router_heldout.py` on
+`tests/data/router_heldout.jsonl` (raw `Planner.interpret_request` plans, local Ollama). Keep its
+requests out of prompts and training data; `tests/test_router_heldout.py` checks that.
 
 ## Debugging
 
@@ -219,7 +216,8 @@ Automation and (for the reminders case) Reminders permissions, and it takes over
   `.hidSystemState` event source. Clicking an inactive app's window otherwise gets swallowed.
 - `QT_MAC_SET_RAISE_PROCESS=0` (set in `a11y_desktop.py`): otherwise raising the mascot after
   an action activates A11y and takes keyboard focus from the app being worked in.
-- Screen frames are captured at the display's pixel width and scaled to 1440 for the model;
+- Screen frames are captured at the display's pixel width and scaled to 1280 for the model
+  (`vision.model_image`, `A11Y_MODEL_IMAGE_WIDTH`);
   OCR reads the full-resolution frame. Every frame must be scaled the same way, or click
   guards (pixel hashes) never match and every click is refused as "changed".
 - Real-world failures go in `tests/test_reported_failures.py`, with the reported
@@ -249,4 +247,6 @@ Automation and (for the reminders case) Reminders permissions, and it takes over
    `A11y-macOS.dmg` and `A11y-Windows.zip`. Optional signing secrets: `MACOS_SIGNING_P12`,
    `MACOS_SIGNING_PASSWORD`.
 
-Current state, results and open items: `docs/ai/HANDOFF.md`. More history and platform status: `docs/ai/CLAUDE_HANDOFF.md`, `docs/ai/ON_DEVICE_TUNING.md`.
+Current state, results and open items: `docs/ai/HANDOFF.md`; its history up to 2026-10-30 is
+`docs/ai/HANDOFF_ARCHIVE_2026-10.md`. Older architecture/platform brief: `docs/ai/CLAUDE_HANDOFF.md`;
+model and latency settings: `docs/ai/ON_DEVICE_TUNING.md`.
