@@ -4,7 +4,7 @@
 
 # A11y
 
-**An desktop accessibility companion with floating desktop presence, computer use, and strict local privacy**
+**A desktop accessibility companion with floating desktop presence, computer use, and strict local privacy**
 
    ![macOS](https://img.shields.io/badge/macOS-000000?style=flat-sqircle&logo=apple&logoColor=white)
     ![Ollama](https://img.shields.io/badge/Ollama-000000?style=flat-sqircle&logo=ollama&logoColor=white)
