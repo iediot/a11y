@@ -248,6 +248,7 @@ class CaptionButton(QAbstractButton):
         self.color = QColor(color)  # the glyph's colour
         self.corner = 0   # the window's corner radius, for the button in the top-right corner
         self.hover = 0.
+        self.reduced_motion = False  # reduced motion: the hover shows and hides at once
         self.fade = QVariantAnimation(self)
         self.fade.setDuration(HOVER_MS)
         self.fade.setEasingCurve(QEasingCurve.Type.OutCubic)
@@ -261,8 +262,17 @@ class CaptionButton(QAbstractButton):
         self.hover = float(value)
         self.update()
 
+    def set_reduced_motion(self, enabled):
+        self.reduced_motion = enabled
+        if enabled and self.fade.state() == QVariantAnimation.State.Running:
+            self.fade.stop()
+            self.set_hover(self.fade.endValue())
+
     def fade_to(self, value):
         self.fade.stop()
+        if self.reduced_motion:
+            self.set_hover(value)
+            return
         self.fade.setStartValue(self.hover)
         self.fade.setEndValue(value)
         self.fade.start()
@@ -525,8 +535,6 @@ class Mascot(QWidget):
         self.menu_dot.clicked.connect(lambda: self.show_menu())
         self.prompt_settings.clicked.connect(self.opened)
         buttons = (self.close_dot, self.menu_dot, self.prompt_settings)
-        for dot in buttons:
-            dot.setVisible(not self.native)
         self.window_title = QLabel('a11y')
         self.window_title.setObjectName('windowTitle')
         if self.windows:
@@ -534,9 +542,11 @@ class Mascot(QWidget):
             title.addStretch()
             for button in (self.menu_dot, self.prompt_settings, self.close_dot):
                 title.addWidget(button)
+                button.setVisible(not self.native)  # shown once inside the title bar, never as a window
         else:
             for dot in buttons:
                 title.addWidget(dot)
+                dot.setVisible(not self.native)
             # The real traffic lights sit here on macOS.
             title.addSpacing(66 if self.native else 8)
             title.addWidget(self.window_title)
@@ -1180,6 +1190,9 @@ class Mascot(QWidget):
             self.finish_typing()
             self.finish_animations()
         self.character.set_reduced_motion(enabled)
+        for button in (self.close_dot, self.menu_dot, self.prompt_settings):
+            if isinstance(button, CaptionButton):
+                button.set_reduced_motion(enabled)
 
     def collapse_chat(self, *, animate=False):
         """Close the input drawer. Code that moves her right after (moves, guidance) collapses
