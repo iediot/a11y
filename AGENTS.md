@@ -139,7 +139,7 @@ Windows capture) and are never written to disk.
 | Routing, schemas, validation | `service.py`, `request_plan.py`, `models.py`, `quick_open.py`, `app_names.py`, `web_apps.py` |
 | Models | `ollama.py` (default, local), `claude.py` (opt-in cloud), `provider.py` (shared configuration, errors and redirect protection) |
 | Mac apps in code | `mac_apps.py`, `mail_reader.py`, EventKit in `native/DesktopBridge.swift` |
-| Computer use | `computer_task.py`, `computer_use.py`, `desktop_context.py`, `settings_panes.py`, `vision.py`, `windows_*.py` |
+| Computer use | `computer_task.py` (step loop, code steps, validation; prompts in `task_prompts.py`, completion checks in `task_completion.py`, answers in `task_answers.py`, menu/Settings fallbacks in `task_fallbacks.py`), `computer_use.py`, `desktop_context.py`, `settings_panes.py`, `vision.py`, `windows_*.py` |
 | Voice | `voice.py` (faster-whisper, tiny.en wake + small.en), `neural_voice.py` (Kokoro) |
 | Setup & explicit preferences | `onboarding.py`, `preferences.py`, `setup_ui.py` |
 | Consent & storage | `access.py`, `storage.py`, `paths.py` (data dir, saved AI settings) |
