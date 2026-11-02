@@ -16,5 +16,36 @@ class ReturnKeyTests(unittest.TestCase):
             key_action(['return_'])
 
 
+class NamedLinkWordBoundaryTests(unittest.TestCase):
+    def task(self, goal, label):
+        from companion.computer_task import ComputerTask
+        task = ComputerTask(goal, automatic=True, goal_mode='inspect')
+        task.page_seen = 'http://127.0.0.1:57906/'
+        task.pending = {'type': 'click_point', 'label': label}
+        task.record({'type': 'click_point', 'label': label, 'status': 'submitted'})
+        return task
+
+    PAGE = {'app': {'name': 'Safari', 'bundle_id': 'com.apple.Safari'},
+            'window': {'title': 'Store', 'url': 'http://127.0.0.1:57906/store'}}
+    REGIONS = [dict(text='Store', x=.1, y=.1, width=.2, height=.04), dict(text='Gift cards', x=.1, y=.2, width=.2, height=.04)]
+
+    def test_a_link_name_inside_another_word_is_not_the_named_link(self):
+        # "Store" is not named by "Restore": the early check must not run, and its
+        # clicked-label quote must not be accepted as navigation evidence.
+        from unittest.mock import Mock
+        task = self.task('Open the Restore guide on this support site.', 'Store')
+        provider = Mock(complete_structured=Mock(side_effect=[
+            dict(met=True, missing='', evidence='Store'), dict(message='The store is open.')]))
+        self.assertIsNone(task.goal_met(provider, self.PAGE, self.REGIONS, {}))
+        provider.complete_structured.assert_not_called()
+
+    def test_the_named_link_as_whole_words_still_checks(self):
+        from unittest.mock import Mock
+        task = self.task('Open the Store page on this site.', 'Store')
+        provider = Mock(complete_structured=Mock(side_effect=[
+            dict(met=True, missing='', evidence='Store'), dict(message='The store is open.')]))
+        self.assertEqual(task.goal_met(provider, self.PAGE, self.REGIONS, {})['status'], 'done')
+
+
 if __name__ == '__main__':
     unittest.main()

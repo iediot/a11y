@@ -1279,7 +1279,8 @@ class ComputerTask:
         # apple.com, then take me to its Support page" was accepted as the whole goal (live, brace batch).
         clicked = ' '.join(str(last.get('label', '')).casefold().split())
         navigated = ((observation['facts'].get('browser_navigation') or {}).get('changed') is True
-                     and len(clicked) >= 2 and clicked in ' '.join(self.goal.casefold().split()))
+                     and len(clicked) >= 2  # whole words: a "Store" link is not named by "Restore"
+                     and re.search(r'(?<!\w)'+re.escape(clicked)+r'(?!\w)', ' '.join(self.goal.casefold().split())) is not None)
         if self.goal_mode != 'inspect' or last.get('effect') or self.queue:
             return None
         if browser:
