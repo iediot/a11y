@@ -114,7 +114,8 @@ def key_action(keys):
     from .input_actions import KEYS
     if not isinstance(keys, (list, tuple)) or not keys or not all(isinstance(k, str) for k in keys):
         raise ProviderError('Invalid GUI shortcut.')
-    keys = [dict(command='cmd', super='cmd', return_='enter', esc='escape').get(k.lower(), k.lower()) for k in keys]
+    aliases = {'command': 'cmd', 'super': 'cmd', 'return': 'enter', 'esc': 'escape'}  # pyautogui's names
+    keys = [aliases.get(k.lower(), k.lower()) for k in keys]
     key = '_'.join(keys)
     if key not in KEYS:
         raise ProviderError('This shortcut is not supported by the validated input adapter.')
