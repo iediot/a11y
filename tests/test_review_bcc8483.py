@@ -47,5 +47,18 @@ class NamedLinkWordBoundaryTests(unittest.TestCase):
         self.assertEqual(task.goal_met(provider, self.PAGE, self.REGIONS, {})['status'], 'done')
 
 
+class BenchmarkMalformedReplyTests(unittest.TestCase):
+    def test_a_malformed_reply_is_a_miss_not_a_crash(self):
+        # The replay loop catches ProviderError/ValueError/KeyError/TypeError only: an
+        # AttributeError from score() ended the whole benchmark run.
+        from scripts.gui_benchmark import score
+        row = {'box': [.1, .2, .3, .4]}
+        for raw in ({'status': 'action', 'message': 'm', 'risk': 'navigation', 'action': 'click'},
+                    {'status': 'action', 'message': 'm', 'risk': 'navigation', 'action': ['click_point', .2, .3]},
+                    ['not', 'an', 'object'], None, 'Action: click'):
+            with self.subTest(raw=raw):
+                self.assertEqual(score(raw, row), {'hit': False, 'click_valid': False})
+
+
 if __name__ == '__main__':
     unittest.main()

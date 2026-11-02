@@ -30,9 +30,11 @@ def distribution(values):
 
 def score(raw, row):
     """Strict, unsnapped proposal hit. Malformed/unsupported/wrong tools remain failures."""
+    if not isinstance(raw, dict):
+        return {'hit': False, 'click_valid': False}
     raw = resolve_target(raw, row.get('targets', []))
     action = raw.get('action') or {}
-    if raw.get('status') != 'action' or action.get('type') != 'click_point':
+    if raw.get('status') != 'action' or not isinstance(action, dict) or action.get('type') != 'click_point':
         return {'hit': False, 'click_valid': False}
     from companion.computer_task import normalize_click
     action = normalize_click(action)
