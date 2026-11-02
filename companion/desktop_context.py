@@ -438,12 +438,13 @@ class DesktopContext:
             return dict(action, bundle_id='com.apple.Music', label='Find and play “'+action['query']+'” in Music')
         if isinstance(action, dict) and action.get('type') == 'open_settings_pane':
             # Navigation only: an exact pane identifier from the system's own catalog, never free text.
-            from .settings_panes import pane, BUNDLE_ID
+            from .settings_panes import pane, settings_app
             entry = pane(action.get('pane')) if set(action) == {'type', 'pane'} else None
             if entry is None:
-                raise ValueError('That System Settings pane is not in the catalog.')
-            return {'type': 'open_settings_pane', 'pane': entry['id'], 'bundle_id': BUNDLE_ID,
-                    'label': 'Open '+entry['name']+' in System Settings'}
+                raise ValueError('That Settings pane is not in the catalog.')
+            app_id, app_name = settings_app()
+            return {'type': 'open_settings_pane', 'pane': entry['id'], 'bundle_id': app_id,
+                    'label': 'Open '+entry['name']+' in '+app_name}
         if isinstance(action, dict) and set(action) == {'type', 'bundle_id'} and action['type'] == 'launch_app':
             app = next((item for item in self.installed_apps() if item['bundle_id'] == action['bundle_id']), None)
             if app:
@@ -520,6 +521,13 @@ class DesktopContext:
             return result
         if kind == 'open_settings_pane':
             current = self.authorize_action({'type': kind, 'pane': proposal.get('pane')})
+            if sys.platform == 'win32':
+                # The Windows bridge opens ms-settings:<page> after checking the page against its fixed list.
+                result = self.bridge.application_action(current)
+                if not result.get('submitted'):
+                    raise RuntimeError('Settings could not open that page.')
+                self.collect_once()
+                return result
             try:
                 result = subprocess.run(['open', 'x-apple.systempreferences:'+current['pane']], capture_output=True, timeout=10)
             except (OSError, subprocess.TimeoutExpired):

@@ -20,7 +20,7 @@ from .task_completion import (  # noqa: F401 - re-exported: imported and patched
 from .task_answers import (  # noqa: F401 - re-exported: imported and patched as computer_task.<name>
     ANSWER_SYSTEM, ANSWER_SCHEMA, AnswerWriting)
 from .task_fallbacks import (  # noqa: F401 - re-exported: imported and patched as computer_task.<name>
-    PANE_SYSTEM, MENU_SYSTEM, MENU_UNSAFE, MENU_CONTENT, Fallbacks)
+    PANE_SYSTEM, PANE_SYSTEM_WINDOWS, MENU_SYSTEM, MENU_UNSAFE, MENU_CONTENT, Fallbacks)
 
 
 # "Any new notifications?" means opening the app's notification view, not reading whatever

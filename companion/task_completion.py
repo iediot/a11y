@@ -35,8 +35,10 @@ def structured_facts(snapshot):
         if isinstance(snapshot['finder'].get('selection'), list):
             facts['finder']['selection'] = [str(name)[:255] for name in snapshot['finder']['selection'][:5]]
         if facts['finder'].get('target'):
-            from pathlib import PurePosixPath
-            folder=PurePosixPath(facts['finder']['target'])
+            from pathlib import PurePosixPath, PureWindowsPath
+            # Finder gives a POSIX path; File Explorer (Windows) a drive or UNC path.
+            target = facts['finder']['target']
+            folder=(PureWindowsPath if re.match(r'^(?:[A-Za-z]:\\|\\\\)', target) else PurePosixPath)(target)
             facts['finder'].update(folder_name=folder.name,parent_folder_name=folder.parent.name)
     if snapshot.get('browser'):
         facts['browser'] = {k:v for k,v in snapshot['browser'].items() if k in ('window_id','tab_count') and type(v) is int}

@@ -8,6 +8,9 @@ from .models import ValidationError
 PANE_SYSTEM = '''The user's goal is about System Settings on their Mac. Below are its panes. Pick the one pane
 the goal needs to go to first ("turn on Night Shift" is Displays, "battery health" is Battery).
 Pick "none" when no pane fits or current_pane already is the one.'''
+PANE_SYSTEM_WINDOWS = '''The user's goal is about Settings on their Windows PC. Below are its pages. Pick the one page
+the goal needs to go to first ("make everything on screen bigger" is Display, "stop apps opening when I sign in"
+is Startup apps). Pick "none" when no page fits or current_pane already is the one.'''
 MENU_SYSTEM = '''The user wants something done in the app in front. Below are that app's menu commands as
 "Menu > Item". Pick the one command that does what the goal asks or opens the place it asks for
 ("the sites I visited" is History > Show All History). Pick "none" when no command does it, or when
@@ -88,12 +91,14 @@ class Fallbacks:
         return {'status': 'action', 'message': action.get('label', 'Using the menu')+'…', 'action': action, 'review': not self.automatic, 'visual_capture': None}
 
     def settings_pane_step(self, desktop, snapshot, provider, cancel_kwargs):
-        """Once per task, with System Settings in front: open the pane the goal needs by its exact
-        identifier (the text model picks a name from the system's own pane catalog, an enum). A pixel
+        """Once per task, with System Settings (macOS) or Settings (Windows) in front: open the pane the
+        goal needs by its exact identifier (the text model picks a name from the pane catalog, an enum:
+        the system's own on macOS, a fixed ms-settings: list on Windows). A pixel
         click on "About" inside General could not be told from a switch and waited for a confirmation
         (live, harder suite)."""
-        from .settings_panes import catalog, BUNDLE_ID
-        if getattr(self, 'pane_picked', False) or self.queue or (snapshot.get('app') or {}).get('bundle_id') != BUNDLE_ID:
+        from .settings_panes import catalog, is_settings_app, BUNDLE_ID
+        front = (snapshot.get('app') or {}).get('bundle_id')
+        if getattr(self, 'pane_picked', False) or self.queue or not is_settings_app(front):
             return None
         self.pane_picked = True
         panes = catalog()
@@ -104,7 +109,7 @@ class Fallbacks:
         schema = {'type': 'object', 'additionalProperties': False, 'required': ['pane'],
                   'properties': {'pane': {'enum': ['none']+names}}}
         try:
-            reply = provider.complete_structured(PANE_SYSTEM, [{'role': 'user', 'content': json.dumps(
+            reply = provider.complete_structured(PANE_SYSTEM if front == BUNDLE_ID else PANE_SYSTEM_WINDOWS, [{'role': 'user', 'content': json.dumps(
                 {'goal': self.goal, 'current_pane': current, 'panes': names}, ensure_ascii=False)}],
                 schema=schema, max_tokens=40, thinking=False, **cancel_kwargs)
         except (RuntimeError, ValueError, OSError, TypeError):

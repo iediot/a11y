@@ -2,9 +2,11 @@
 
 Reads window metadata (titles, owners, bounds) through Win32 and, when UI Automation
 is available, the focused element's role and named actionable controls of the
-foreground window. Field contents are never read. Actions: opening catalog apps and
-supported browsers, focusing an app, closing an observed window, asking an app to
-quit, pressing an observed UIA control, clicking a guarded screen point, and
+foreground window. Field contents are never read. Computer-task steps also get, as on
+macOS, the folder and selected names of a File Explorer window in front and the page
+address of a supported browser. Actions: opening catalog apps, supported browsers and
+Settings pages from a fixed list, focusing an app, closing an observed window, asking
+an app to quit, pressing an observed UIA control, clicking a guarded screen point, and
 bounded text/key/scroll input into the observed foreground window.
 """
 import ctypes
@@ -36,6 +38,9 @@ CATALOG_TTL = 600
 # Browsers found through the App Paths registry; ids are stable across machines.
 BROWSERS = (('browser:edge', 'Microsoft Edge', 'msedge.exe'), ('browser:chrome', 'Google Chrome', 'chrome.exe'),
             ('browser:firefox', 'Firefox', 'firefox.exe'))
+# The same browsers as running windows report them (their executable).
+BROWSER_EXECUTABLES = frozenset(executable for _, _, executable in BROWSERS)
+EXPLORER = 'explorer.exe'
 BLOCKED_INPUT = {'cmd.exe', 'powershell.exe', 'pwsh.exe', 'windowsterminal.exe', 'wt.exe', 'conhost.exe',
                  'openconsole.exe', 'mintty.exe', 'wsl.exe', 'bash.exe', 'regedit.exe', 'mmc.exe'}
 GA_ROOT = 2
@@ -185,13 +190,13 @@ class WindowsDesktopBridge:
     # (windows_input.py). Not yet exercised on real Windows; see docs/ai/CLAUDE_HANDOFF.md.
     supports_input = True
 
-    def __init__(self, directory=None, *, win32=None, monitors=None, sender=None, uia=None, focus=None):
+    def __init__(self, directory=None, *, win32=None, monitors=None, sender=None, uia=None, focus=None, shell=None):
         self.win32 = win32 or _Win32()
         self.own_pid = os.getpid()
         self.lock = threading.Lock()
         self.catalog_cache = ([], {}, 0.0)
         self.names = {}
-        self._monitors, self._sender, self._uia, self._focus = monitors, sender, uia, focus
+        self._monitors, self._sender, self._uia, self._focus, self._shell = monitors, sender, uia, focus, shell
         self.uia_ready = threading.Event()
         if win32 is None:
             # Reading the Start menu takes a few seconds and the first comtypes import
@@ -220,6 +225,13 @@ class WindowsDesktopBridge:
             self._uia = ui_automation(self.monitors()) or False
             self.uia_ready.set()
         return self._uia or None
+
+    def explorer(self):
+        """Shell.Application adapter for File Explorer facts; None without comtypes."""
+        if self._shell is None:
+            from .windows_input import shell_windows
+            self._shell = shell_windows() or False
+        return self._shell or None
 
     def focus_reader(self):
         if self._focus is None:
@@ -261,6 +273,55 @@ class WindowsDesktopBridge:
         return result
 
     def sample(self):
+        return self.observe()[0]
+
+    def sample_targets(self, bundle_id=None):
+        """A sample plus the exact facts computer-task steps use, as MacDesktopBridge.sample_targets
+        gives them: File Explorer's folder and selected names (under 'finder', the key the shared
+        task code reads) and a browser's page address (window.url). Each is left out when it cannot
+        be read; nothing here asks a model. Windows always observes the window in front."""
+        output, front = self.observe()
+        if front is None:
+            return output
+        facts = self.explorer_facts(front)
+        if facts:
+            output['finder'] = facts
+        url = self.page_url(front)
+        if url:
+            output['window']['url'] = url
+        return output
+
+    def explorer_facts(self, window):
+        if window['bundle_id'] != EXPLORER:
+            return {}
+        shell = self.explorer()
+        if not shell:
+            return {}
+        try:
+            facts = shell.facts(window['hwnd'])
+        except Exception:  # COM errors from a closing or busy Explorer window
+            return {}
+        result = {}
+        if isinstance(facts.get('target'), str) and facts['target']:
+            result['target'] = facts['target'][:1024]
+        if isinstance(facts.get('selection'), list):
+            result['selection'] = [str(name)[:255] for name in facts['selection'] if isinstance(name, str) and name][:5]
+        return result
+
+    def page_url(self, window):
+        """The browser's page address, only for a supported browser and only a public http(s) one."""
+        if window['bundle_id'] not in BROWSER_EXECUTABLES:
+            return ''
+        automation = self.automation()
+        if not automation:
+            return ''
+        try:
+            return page_address(automation.page_url(window['hwnd']))
+        except Exception:  # COM errors and timeouts from the browser
+            return ''
+
+    def observe(self):
+        """(sample, the front window record or None)."""
         windows = self.windows()
         apps, seen = [], set()
         for window in windows:
@@ -283,11 +344,11 @@ class WindowsDesktopBridge:
         foreground = self.win32.user32.GetForegroundWindow()
         if foreground and self.win32.pid(foreground) == self.own_pid:
             output['status'] = 'companion_focused'
-            return output
+            return output, None
         front = next((w for w in windows if w['hwnd'] == int(foreground or 0)), None)
         if front is None:
             output['status'] = 'unavailable'
-            return output
+            return output, None
         output['status'] = 'available'
         output['app'] = {'name': front['name'], 'bundle_id': front['bundle_id'], 'pid': front['pid']}
         output['window'] = {'title': front['title'], 'bounds': front['bounds']}
@@ -299,7 +360,7 @@ class WindowsDesktopBridge:
                 output['focused_bounds'] = focus['bounds']
         output['controls'] = [descriptor for descriptor, _ in self.controls(front)]
         output['control_source'] = 'uia' if self.automation() else 'unavailable'
-        return output
+        return output, front
 
     def focused(self, window):
         """Focused element of the foreground window: UIA first, classic Win32 fallback."""
@@ -466,6 +527,8 @@ class WindowsDesktopBridge:
             while time.monotonic() < deadline and not self.running_windows(action['bundle_id']):
                 time.sleep(0.2)
             return {'submitted': True, 'verification_required': True}
+        if kind == 'open_settings_pane':
+            return self.open_settings_pane(action)
         if kind == 'quit_app':
             windows = [w for w in self.windows() if w['bundle_id'] == action['bundle_id']]
             if not windows:
@@ -485,6 +548,22 @@ class WindowsDesktopBridge:
             self.wait_closed({hwnd})
             return {'submitted': sent, 'verification_required': True}
         raise RuntimeError('New-window automation is currently available only on macOS.')
+
+    def open_settings_pane(self, action):
+        """A Settings page from the fixed list (settings_panes.WINDOWS_PANES), opened by its
+        ms-settings: URI. Anything else is refused before Windows sees it."""
+        from .settings_panes import windows_uri, WINDOWS_APP_IDS
+        uri = windows_uri(action.get('pane')) if isinstance(action.get('pane'), str) else None
+        if uri is None:
+            raise RuntimeError('That Settings page is not in the list.')
+        try:
+            os.startfile(uri)
+        except (OSError, AttributeError):
+            raise RuntimeError('Settings could not open that page.') from None
+        deadline = time.monotonic()+3
+        while time.monotonic() < deadline and not any(w['bundle_id'] in WINDOWS_APP_IDS for w in self.windows()):
+            time.sleep(0.2)
+        return {'submitted': True, 'verification_required': True}
 
     def wait_closed(self, handles, timeout=3):
         """Let windows close before the result is observed; an app may also ask to save first."""
@@ -598,3 +677,17 @@ class WindowsDesktopBridge:
         if not invoked:
             raise RuntimeError('That control does not support being pressed. Ask for a visual click instead.')
         return {'submitted': True, 'verification_required': True}
+
+
+def page_address(text):
+    """A browser page address fit for the task's facts: http(s), a host, no credentials, no control
+    characters, at most 1024 characters. '' otherwise (edge://, file://, about:blank…)."""
+    if not isinstance(text, str) or not text or len(text) > 1024 or any(ord(c) < 32 or ord(c) == 127 for c in text):
+        return ''
+    try:
+        url = urlsplit(text)
+        if url.scheme not in ('http', 'https') or not url.hostname or url.username or url.password:
+            return ''
+    except ValueError:
+        return ''
+    return text
