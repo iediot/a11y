@@ -60,5 +60,15 @@ class BenchmarkMalformedReplyTests(unittest.TestCase):
                 self.assertEqual(score(raw, row), {'hit': False, 'click_valid': False})
 
 
+class PolicyChoiceTargetTests(unittest.TestCase):
+    def test_missing_or_blank_targets_never_agree(self):
+        from scripts.policy_choice_eval import matches_target
+        self.assertTrue(matches_target(' Amber Lantern ', {'target': 'amber lantern'}))
+        self.assertFalse(matches_target('Amber', {'target': None}))  # crashed: None.casefold()
+        self.assertFalse(matches_target('   ', {}))  # a blank search counted as agreement
+        self.assertFalse(matches_target('', {'target': ''}))
+        self.assertFalse(matches_target('x', {'target': 7}))
+
+
 if __name__ == '__main__':
     unittest.main()
