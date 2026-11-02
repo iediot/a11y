@@ -41,10 +41,15 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(names, {'About': 'com.apple.SystemProfiler.AboutExtension', 'wifi': 'com.apple.wifi-settings-extension',
                                  'Date Time': 'com.apple.Date-Time-Settings.extension', 'Wallet & Apple Pay': 'com.apple.WalletSettingsExtension'})
 
-    def test_no_catalog_off_macos(self):
+    def test_no_installed_catalog_off_macos(self):
+        # Windows gets its fixed ms-settings: list instead (tests/test_platform_parity.py); nothing else has one.
         settings_panes.catalog.cache_clear()
-        with patch.object(settings_panes.sys, 'platform', 'win32'):
+        with patch.object(settings_panes.sys, 'platform', 'linux'):
             self.assertEqual(settings_panes.catalog(), [])
+        with patch.object(settings_panes.sys, 'platform', 'win32'), patch.object(settings_panes.Path, 'glob') as glob:
+            settings_panes.catalog.cache_clear()
+            self.assertNotIn('com.apple', repr(settings_panes.catalog()))
+            glob.assert_not_called()
         settings_panes.catalog.cache_clear()
 
 
