@@ -70,5 +70,15 @@ class PolicyChoiceTargetTests(unittest.TestCase):
         self.assertFalse(matches_target('x', {'target': 7}))
 
 
+class BenchmarkPercentileTests(unittest.TestCase):
+    def test_p95_is_the_nearest_rank_not_the_maximum(self):
+        from scripts.gui_benchmark import distribution
+        self.assertEqual(distribution(range(1, 21))['p95'], 19)  # was 20, the maximum
+        self.assertEqual(distribution(range(1, 101))['p95'], 95)  # was 96
+        self.assertEqual(distribution([4])['p95'], 4)
+        self.assertEqual(distribution([3, 1])['p95'], 3)
+        self.assertIsNone(distribution([]))
+
+
 if __name__ == '__main__':
     unittest.main()

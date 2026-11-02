@@ -9,6 +9,7 @@ import argparse
 from collections import defaultdict
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import statistics
@@ -25,7 +26,8 @@ from companion.provider import AIConfig, ProviderError
 def distribution(values):
     values = sorted(values)
     return None if not values else dict(n=len(values), p50=statistics.median(values),
-                                        p95=values[min(len(values)-1, int(.95*len(values)))], max=max(values))
+                                        p95=values[max(0, math.ceil(.95*len(values))-1)],  # nearest rank
+                                        max=max(values))
 
 
 def score(raw, row):
