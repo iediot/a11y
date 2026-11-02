@@ -10,6 +10,14 @@ on:
   push:
     branches: [main]
     tags: ['v*']
+  # Every pull request runs the unit tests on macOS and Windows (and builds and self-tests both apps)
+  # before it can be merged. Fork PRs get no secrets, so the macOS build falls back to an ad-hoc signature.
+  pull_request:
+
+# A newer push to the same pull request replaces its older run; every run on main and tags finishes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: write
