@@ -45,6 +45,7 @@ ACTIONABLE = {UIA_BUTTON: 'button', UIA_CHECKBOX: 'checkbox', UIA_COMBOBOX: 'com
 # Roles shared with the macOS bridge so input authorization is platform neutral.
 TEXT_ROLES = {UIA_EDIT: 'AXTextField', UIA_DOCUMENT: 'AXTextArea', UIA_COMBOBOX: 'AXComboBox'}
 PROP_BOUNDS, PROP_CONTROL_TYPE, PROP_NAME, PROP_ENABLED, PROP_PASSWORD, PROP_OFFSCREEN = 30001, 30003, 30005, 30010, 30019, 30022
+PROP_VALUE, PROP_LEGACY_VALUE = 30045, 30093
 PATTERN_INVOKE, PATTERN_SELECTION_ITEM, PATTERN_TOGGLE, PATTERN_EXPAND, PATTERN_LEGACY = 10000, 10010, 10015, 10005, 10018
 TREE_SCOPE_DESCENDANTS = 4
 MAX_CONTROLS = 45
@@ -331,6 +332,79 @@ class UIAutomation:
             getattr(pattern.QueryInterface(interface), method)()
             return True
         return False
+
+    def page_url(self, hwnd):
+        """The address of the page a browser window shows: the value of its web document (Chromium's
+        root web area, Firefox's document), the counterpart of AXWebArea's AXURL on macOS. Never
+        reads the address bar or any other field. '' when there is none; callers validate it."""
+        automation = self.automation()
+        root = automation.ElementFromHandle(hwnd)
+        document = root.FindFirst(TREE_SCOPE_DESCENDANTS, automation.CreatePropertyCondition(PROP_CONTROL_TYPE, UIA_DOCUMENT))
+        if not document:
+            return ''
+        for prop in (PROP_VALUE, PROP_LEGACY_VALUE):
+            value = document.GetCurrentPropertyValue(prop)
+            if isinstance(value, str) and value:
+                return value
+        return ''
+
+
+class ShellWindows:
+    """File Explorer windows through the shell's own Shell.Application object: the folder a
+    window shows and the names of its selected items (at most five). Never file contents."""
+
+    def __init__(self):
+        import comtypes
+        import comtypes.client
+        self.comtypes, self.client = comtypes, comtypes.client
+        self.local = threading.local()
+
+    def shell(self):
+        if not hasattr(self.local, 'shell'):
+            try:
+                self.comtypes.CoInitializeEx(self.comtypes.COINIT_MULTITHREADED)
+            except OSError:
+                pass  # Already initialized in this thread.
+            self.local.shell = self.client.CreateObject('Shell.Application', dynamic=True)
+        return self.local.shell
+
+    def facts(self, hwnd):
+        """{'target': folder path, 'selection': [names]} for the Explorer window with this handle;
+        {} when no Explorer window has it (the desktop, a dialog) or the folder is virtual."""
+        windows = self.shell().Windows()
+        for index in range(min(int(windows.Count), 50)):
+            window = windows.Item(index)
+            if window is None or int(window.HWND) != int(hwnd):
+                continue
+            view = window.Document
+            facts = {}
+            folder = str(view.Folder.Self.Path or '')
+            if is_file_path(folder):
+                facts['target'] = folder[:1024]
+            items = view.SelectedItems()
+            names = []
+            for number in range(min(int(items.Count), 5)):
+                item = items.Item(number)
+                path = str(item.Path or '')
+                # The file's real name (with its extension) when it is a file; else the shown name.
+                names.append((path.replace('/', '\\').rstrip('\\').rsplit('\\', 1)[-1] if is_file_path(path) else str(item.Name or ''))[:255])
+            facts['selection'] = [name for name in names if name]
+            return facts
+        return {}
+
+
+def is_file_path(text):
+    """A drive or UNC path, not a virtual shell location ("::{GUID}")."""
+    return isinstance(text, str) and len(text) <= 1024 and (
+        (len(text) >= 3 and text[0].isascii() and text[0].isalpha() and text[1:3] in (':\\', ':/')) or text.startswith('\\\\'))
+
+
+def shell_windows():
+    """Shell.Application adapter, or None when comtypes is unavailable."""
+    try:
+        return ShellWindows()
+    except (ImportError, OSError, AttributeError):
+        return None
 
 
 def ui_automation(monitors):

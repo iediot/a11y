@@ -27,6 +27,8 @@ a job is running or a result passed.
   workflow. The hand-labelled held-out set is `tests/data/router_heldout.jsonl`, scored by
   `scripts/router_heldout.py`.
 - [ON_DEVICE_TUNING.md](ON_DEVICE_TUNING.md): local model and latency settings.
+- [PLATFORM_PARITY.md](PLATFORM_PARITY.md): each macOS-first feature (Settings panes, Finder
+  selection, browser page address, scrolling) and its Windows status.
 - [CLAUDE_HANDOFF.md](CLAUDE_HANDOFF.md): earlier architecture/platform brief; owner
   instructions in HANDOFF take precedence.
 
