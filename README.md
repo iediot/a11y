@@ -4,7 +4,7 @@
 
 # A11y
 
-**An desktop accessibility companion with floating desktop presence, computer use, and strict local privacy**
+**A desktop accessibility companion with floating desktop presence, computer use, and strict local privacy**
 
    ![macOS](https://img.shields.io/badge/macOS-000000?style=flat-sqircle&logo=apple&logoColor=white)
     ![Ollama](https://img.shields.io/badge/Ollama-000000?style=flat-sqircle&logo=ollama&logoColor=white)
@@ -177,13 +177,14 @@ A11y supports local Ollama inference out of the box with zero cloud leakage, Cla
    ```bash
    ollama serve
    ```
-2. Pull a recommended model:
+2. Pull the default models (the setup window does this for you; on low-memory machines it picks
+   `qwen3:1.7b` and `qwen3-vl:2b-instruct`):
    ```bash
-   # Text and task planning
-   ollama pull qwen3.5:9b
+   # Text: routing and chat
+   ollama pull qwen3:4b-instruct
 
-   # Multimodal screen vision
-   ollama pull qwen3-vl:8b-instruct
+   # Vision: screen understanding and computer use
+   ollama pull qwen3-vl:4b-instruct
    ```
 3. A11y scans installed models automatically in **Settings → AI connection → Find local Ollama models**.
 
