@@ -80,5 +80,36 @@ class BenchmarkPercentileTests(unittest.TestCase):
         self.assertIsNone(distribution([]))
 
 
+@unittest.skipUnless(__import__('shutil').which('bash') and __import__('shutil').which('flock')
+                     and __import__('sys').platform != 'win32', 'needs bash and flock')
+class ConversionInterruptTests(unittest.TestCase):
+    def test_an_interrupted_conversion_stays_interrupted(self):
+        # The INT/TERM trap wrote "interrupted", then its exit 130 ran the EXIT trap,
+        # which overwrote progress.json with "failed".
+        import json, os, signal, subprocess, sys, tempfile, time
+        from pathlib import Path
+        script = Path(__file__).resolve().parent.parent/'scripts'/'router_arch_convert.sh'
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            (root/'qualification-pilot-1').mkdir()
+            for env in ('.venv', '.venv-convert'):
+                (root/env/'bin').mkdir(parents=True)
+                stub = root/env/'bin'/'python'
+                stub.write_text('#!/bin/sh\ncat >/dev/null\nsleep 1\n')  # stands in for the version checks
+                stub.chmod(0o755)
+            out = root/'out'
+            env = dict(os.environ, PATH=os.environ.get('PATH', '')+os.pathsep+os.path.dirname(sys.executable))
+            process = subprocess.Popen(['bash', str(script), str(root), str(out)], env=env,
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            progress = out/'progress.json'
+            deadline = time.monotonic()+20
+            while time.monotonic() < deadline and not (progress.exists() and progress.read_text().strip()):
+                time.sleep(.05)
+            self.assertEqual(json.loads(progress.read_text())['status'], 'running')
+            process.send_signal(signal.SIGTERM)
+            self.assertEqual(process.wait(timeout=30), 130)
+            self.assertEqual(json.loads(progress.read_text())['status'], 'interrupted')
+
+
 if __name__ == '__main__':
     unittest.main()
