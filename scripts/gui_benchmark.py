@@ -9,6 +9,7 @@ import argparse
 from collections import defaultdict
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import statistics
@@ -25,14 +26,17 @@ from companion.provider import AIConfig, ProviderError
 def distribution(values):
     values = sorted(values)
     return None if not values else dict(n=len(values), p50=statistics.median(values),
-                                        p95=values[min(len(values)-1, int(.95*len(values)))], max=max(values))
+                                        p95=values[max(0, math.ceil(.95*len(values))-1)],  # nearest rank
+                                        max=max(values))
 
 
 def score(raw, row):
     """Strict, unsnapped proposal hit. Malformed/unsupported/wrong tools remain failures."""
+    if not isinstance(raw, dict):
+        return {'hit': False, 'click_valid': False}
     raw = resolve_target(raw, row.get('targets', []))
     action = raw.get('action') or {}
-    if raw.get('status') != 'action' or action.get('type') != 'click_point':
+    if raw.get('status') != 'action' or not isinstance(action, dict) or action.get('type') != 'click_point':
         return {'hit': False, 'click_valid': False}
     from companion.computer_task import normalize_click
     action = normalize_click(action)

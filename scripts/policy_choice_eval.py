@@ -41,7 +41,9 @@ def score(reply,row):
 
 
 def matches_target(value,row):
-    return isinstance(value,str) and value.strip().casefold()==row.get('target','').casefold()
+    target=row.get('target')
+    return (isinstance(value,str) and isinstance(target,str) and bool(target.strip())
+            and value.strip().casefold()==target.strip().casefold())
 
 
 def main():

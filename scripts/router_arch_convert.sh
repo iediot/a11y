@@ -20,7 +20,7 @@ Path(sys.argv[1]).write_text(json.dumps(dict(status=sys.argv[2],stage=sys.argv[3
 PY
 }
 trap 'code=$?; if (( code != 0 )); then state failed; fi' EXIT
-trap 'state interrupted; exit 130' INT TERM
+trap 'state interrupted; trap - EXIT; exit 130' INT TERM  # keep "interrupted": the EXIT trap would overwrite it with "failed"
 state running
 trainpy="$root/.venv/bin/python"
 convertpy="$root/.venv-convert/bin/python"
