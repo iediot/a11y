@@ -111,5 +111,29 @@ class ConversionInterruptTests(unittest.TestCase):
             self.assertEqual(json.loads(progress.read_text())['status'], 'interrupted')
 
 
+class FocusedClickHitFailureTests(unittest.TestCase):
+    def test_a_failed_hit_test_falls_back_instead_of_ending_the_task(self):
+        # app_click treats a failed native hit test as "no information"; the focused click let the
+        # RuntimeError escape propose(), so the task stopped with the helper's error.
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from companion.computer_task import ComputerTask
+        snapshot = {'platform': 'macOS', 'app': {'name': 'Maps', 'bundle_id': 'com.apple.Maps'},
+                    'window': {'title': 'Map', 'bounds': dict(x=10, y=20, width=900, height=600)}, 'controls': [], 'targets': []}
+        visual = {'screen': dict(x=0, y=0, width=1000, height=800)}
+        vision = SimpleNamespace(enabled=True, generation=0, click_guard=Mock(return_value={'region_hash': 'h'}))
+        class Provider:
+            def prepare_single_click(self, *a, **k): return 'Compass'
+            def localize_target(self, *a, **k): return {'x': .5, 'y': .5}
+        provider = Provider()
+        for error in (RuntimeError('The desktop helper did not answer.'), OSError('gone')):
+            with self.subTest(error=error):
+                desktop = SimpleNamespace(enabled=True, generation=0, bridge=SimpleNamespace(hit=Mock(side_effect=error)))
+                task = ComputerTask('Click Compass.', automatic=True, goal_mode='inspect')
+                self.assertIsNone(task.focused_click_step(desktop, snapshot, [], visual, 'pixels', vision, provider))
+                self.assertIsNone(task.pending)
+                self.assertTrue(task.focused_attempted)
+
+
 if __name__ == '__main__':
     unittest.main()

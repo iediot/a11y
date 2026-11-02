@@ -1137,7 +1137,10 @@ class ComputerTask:
                 return None
             bridge = getattr(desktop, 'bridge', None)
             if hasattr(bridge, 'hit'):
-                hit = bridge.hit(screen['x']+point['x']*screen['width'], screen['y']+point['y']*screen['height'])
+                try:
+                    hit = bridge.hit(screen['x']+point['x']*screen['width'], screen['y']+point['y']*screen['height'])
+                except (RuntimeError, OSError):
+                    return None  # unverified point: the full policy decides instead
                 if (isinstance(hit, dict) and (hit.get('role') in ROLE_NAMES or hit.get('finder_item'))
                         and hit.get('title') and label_words(hit['title']) != label_words(target)):
                     return None
