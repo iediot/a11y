@@ -107,7 +107,13 @@ def field_ok(field, expected, got, operation):
         return _app(got) == _app(expected)
     if field == 'target' and operation == 'browser_open':
         return _url(got) == _url(expected)
+    if field == 'when':  # the router writes seconds; the same minute is the same time
+        return _when(got) == _when(expected)
     return _text(got) == _text(expected)
+
+
+def _when(value):
+    return re.sub(r'(T\d\d:\d\d):00$', r'\1', _text(value).upper())
 
 
 def score_row(row, plan):

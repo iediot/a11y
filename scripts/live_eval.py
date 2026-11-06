@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Run real requests against A11y on this Mac, several times each, and measure them.
+"""Legacy desktop diagnostics. Prefer scripts/human_eval.py for outcome evaluation.
 
-    .venv/bin/python scripts/live_eval.py --runs 3
-    .venv/bin/python scripts/live_eval.py --only "click on Chat" --runs 5
-    .venv/bin/python scripts/live_eval.py --compare .data/live_eval/<earlier>/summary.json
+    .venv/bin/python scripts/live_eval.py --suite harder --runs 3
+    .venv/bin/python scripts/live_eval.py --suite capability --runs 1
 
 It launches A11y from source with A11Y_EVAL=1 (see companion/eval_control.py) and local
 Ollama forced: nothing calls the cloud. Each request is typed into the companion exactly
@@ -13,16 +12,13 @@ Mail's selection, the mascot's position, Calendar's events) and each run records
 seconds, the route taken and why it failed. Timing records (model calls, prompt tokens,
 step stages) come from the app's own `A11y timing` stream.
 
-Side effects, all cleaned up or harmless: Safari tabs and windows the run opened are
-closed (never one that was open before), the harness keeps its own Safari window for
-web cases, and Teams/Mail views are switched for setup. Clicking the first email
-selects it in Mail, which marks it read.
-
-Grant the terminal Accessibility, Screen Recording and Automation (Safari, Mail,
-System Events) first. Your saved consent for app awareness and screen vision in
-.data is used as is; the harness does not turn either on."""
+These diagnostics can change desktop state and require explicit screen availability.
+Suites containing prohibited private applications are disabled, including their setup.
+Use an explicitly configured data directory; no access consent is granted by the runner.
+Legacy pass counts are diagnostic results, not a current capability baseline."""
 import argparse
 from datetime import datetime
+from decimal import Decimal, InvalidOperation, localcontext
 import json
 import os
 from pathlib import Path
@@ -39,6 +35,12 @@ NEUTRAL = 'https://example.com/'
 ONLY = []  # --only for the task suites too
 TEST_MARKER = 'A11y test'  # the only changes the harness may confirm (see companion/eval_control.py)
 TEAMS_HOSTS = ('teams.microsoft.com', 'teams.cloud.microsoft', 'teams.live.com')
+SAFE_LEGACY_SUITES = frozenset({'answers', 'varied', 'conversation', 'broad', 'harder', 'features', 'capability', 'grounding'})
+PROHIBITED_HARNESS_TARGETS = frozenset(name.casefold() for name in (
+    'Mail', 'Messages', 'Photos', 'Contacts', 'Microsoft Teams', 'Teams', 'WhatsApp', 'FaceTime',
+    'com.apple.mail', 'com.apple.MobileSMS', 'com.apple.Photos', 'com.apple.AddressBook',
+    'com.microsoft.teams', 'com.microsoft.teams2', 'net.whatsapp.WhatsApp', 'com.apple.FaceTime',
+))
 
 
 # --- the Mac ---------------------------------------------------------------------------------
@@ -52,10 +54,112 @@ def osa(*lines, timeout=30):
 
 
 def native_command(*arguments):
+    guard_harness_script(arguments)
     # Only short native probes, never inference/training. Background I/O policy
     # made each AppleScript launch take seconds while doing no model work.
     return (['/bin/sh', '-c', 'taskpolicy -B -p $$ && exec "$@"', 'native-probe']
             if sys.platform == 'darwin' else [])+list(arguments)
+
+
+def guard_harness_script(arguments):
+    """Reject explicit private-app AppleScript targets before launching osascript.
+
+    This also protects the argv-based entrypoint in live_heldout. It is a guard for
+    harness-authored probes, not a parser or sandbox for arbitrary AppleScript.
+    """
+    if not arguments or Path(str(arguments[0])).name != 'osascript':
+        return
+    scripts, argv = [], []
+    index = 1
+    while index < len(arguments):
+        argument = str(arguments[index])
+        if argument == '-e' and index+1 < len(arguments):
+            scripts.append(str(arguments[index+1]))
+            index += 2
+        elif argument in ('-l', '-s') and index+1 < len(arguments):
+            index += 2
+        else:
+            argv.append(argument)
+            index += 1
+    source = '\n'.join(scripts)
+    targets = re.findall(r'\b(?:application(?:\s+id)?|process)\s+"([^"]+)"', source, re.I)
+    for position in re.findall(r'\b(?:application(?:\s+id)?|process)\s+\(?item\s+(\d+)\s+of\s+argv\)?', source, re.I):
+        if 0 < int(position) <= len(argv):
+            targets.append(argv[int(position)-1])
+    if any(target.casefold() in PROHIBITED_HARNESS_TARGETS for target in targets):
+        raise RuntimeError('Private applications are prohibited in desktop evaluation; use scripts/human_eval.py with owned fixtures.')
+
+
+def arithmetic_result(left, operation, right):
+    """Independent synthetic oracle, rounded to ten decimal places for display comparison."""
+    with localcontext() as context:
+        context.prec = 40
+        left, right = Decimal(str(left)), Decimal(str(right))
+        if operation == '+':
+            value = left+right
+        elif operation == '-':
+            value = left-right
+        elif operation == '*':
+            value = left*right
+        elif operation == '/':
+            value = left/right
+        else:
+            raise ValueError('Unsupported oracle operation.')
+        return value.quantize(Decimal('0.0000000001')).normalize()
+
+
+NUMBER = re.compile(r'(?<![\w.])[+\-−]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?:[eE][+\-]?\d+)?(?!\w|\.\d)')
+
+
+def number_equals(value, expected):
+    """Compare one complete signed decimal, never an integer substring."""
+    value = str(value).strip().replace('−', '-')
+    if not NUMBER.fullmatch(value):
+        return False
+    try:
+        with localcontext() as context:
+            context.prec = 40
+            actual = Decimal(value.replace(',', ''))
+            return actual.is_finite() and actual.quantize(Decimal('0.0000000001')) == Decimal(str(expected))
+    except InvalidOperation:
+        return False
+
+
+def number_in_text(message, expected):
+    return any(number_equals(match.group(), expected) for match in NUMBER.finditer(str(message)))
+
+
+def calculator_display():
+    """Read a labelled result/display control, excluding keypad and history text.
+
+    Unknown Calculator accessibility layouts fail closed with no display value.
+    This probe does not call A11y's desktop or arithmetic implementations.
+    """
+    return osa('''tell application "System Events" to tell process "Calculator"
+repeat with control in entire contents of front window
+    try
+        set controlRole to role of control
+        if controlRole is in {"AXStaticText", "AXTextField", "AXTextArea"} then
+            set controlLabel to description of control as text
+            try
+                set controlLabel to controlLabel & " " & (value of attribute "AXIdentifier" of control as text)
+            end try
+            if controlLabel contains "result" or controlLabel contains "display" then
+                try
+                    return value of control as text
+                on error
+                    return name of control as text
+                end try
+            end if
+        end if
+    end try
+end repeat
+return ""
+end tell''')
+
+
+def calculator_matches(expected):
+    return front_app() == 'Calculator' and number_equals(calculator_display(), expected)
 
 
 def same_path(actual, expected):
@@ -508,6 +612,9 @@ class App:
         import tempfile
         # A private folder: macOS limits socket paths to 104 characters, too short for some data folders.
         self.socket = Path(tempfile.mkdtemp(prefix='a11y-eval-'))/'eval.sock'
+        # Passing ROOT/'.data' keeps the historical setup. Isolated callers must
+        # explicitly configure consent/settings in their own directory first.
+        self.data = Path(data).resolve()
         self.log = log
         self.process = None
         from companion.instance import build_id
@@ -544,7 +651,7 @@ class App:
                if not key.startswith(('ANTHROPIC_', 'OPENAI_')) and key not in ('A11Y_AI_BASE_URL', 'A11Y_AI_KEY')}
         if getattr(self, 'shots', None):
             env['A11Y_EVAL_SHOTS'] = str(self.shots)
-        env.update(A11Y_EVAL='1', A11Y_EVAL_SOCKET=str(self.socket), A11Y_AI_PROVIDER='ollama', A11Y_WEB_ANSWERS=os.getenv('A11Y_WEB_ANSWERS', '1'),
+        env.update(A11Y_EVAL='1', A11Y_EVAL_SOCKET=str(self.socket), A11Y_DATA_DIR=str(self.data), A11Y_AI_PROVIDER='ollama', A11Y_WEB_ANSWERS=os.getenv('A11Y_WEB_ANSWERS', '1'),
                    A11Y_ROUTES='0', PYTHONUNBUFFERED='1')  # a test run neither learns nor follows routes (they leaked between runs)
         if self.socket.exists():
             self.socket.unlink()
@@ -562,7 +669,7 @@ class App:
                 pass
             time.sleep(0.5)
         self.process.terminate()  # never leave a second A11y running behind (it happened, live)
-        raise SystemExit('A11y did not get ready (app awareness and screen vision must be remembered as on).')
+        raise SystemExit('A11y did not get ready: configure app awareness and screen vision explicitly in '+str(self.data)+'. The harness does not grant consent.')
 
     def quit(self):
         if self.process and self.process.poll() is None:
@@ -767,8 +874,8 @@ def build_cases(eval_window):
 
     def calculator_check(state, events):
         message = final_message(events)
-        if not re.search(r'\b42\b', message) or failed_reply(message):
-            return 'reply: '+message[:160]
+        if not number_in_text(message, 42) or failed_reply(message) or not calculator_matches(42):
+            return 'Calculator display or reply does not show 42: '+message[:160]
         return None
 
     def follow_up_check(state, events):
@@ -887,7 +994,6 @@ def build_varied(eval_window, count, seed):
     """Fresh tasks every run: random apps, places, numbers and wording. Read-only, except typing
     into search fields and a new TextEdit document (skipped when TextEdit is already open)."""
     import random
-    from companion.arithmetic import evaluate, formatted
     rng = random.Random(seed)
 
     def pick(*options):
@@ -898,11 +1004,10 @@ def build_varied(eval_window, count, seed):
         op, words, symbol = pick(('+', 'plus', 'add'), ('-', 'minus', 'subtract'), ('*', 'times', 'multiply'), ('/', 'divided by', 'divide'))
         request = pick('open calculator and compute {a} {w} {b}', 'use the calculator to work out {a} {w} {b}',
                        'in Calculator, calculate {a} {w} {b}', 'open the calculator app and do {a} {w} {b} for me').format(a=a, w=words, b=b)
-        result = formatted(evaluate('%d %s %d' % (a, op, b)))
-        digits = re.sub(r'[^\d]', '', str(result).split('.')[0])
+        result = arithmetic_result(a, op, b)
         def check(state, events):
             message = final_message(events)
-            return None if digits and digits in re.sub(r'[^\d]', '', message) else 'expected '+str(result)+': '+message[:120]
+            return None if number_in_text(message, result) and calculator_matches(result) else 'expected Calculator display and reply '+str(result)+': '+message[:120]
         return Case(request, check, setup=lambda app: activate('Finder'), timeout=180)
 
     def settings():
@@ -1140,15 +1245,18 @@ def main():
     parser.add_argument('--only', action='append', help='run only requests containing this text (repeatable)')
     parser.add_argument('--out', default=str(ROOT/'.data'/'live_eval'))
     parser.add_argument('--compare', help='an earlier summary.json to show next to the results')
-    parser.add_argument('--suite', choices=('requests', 'navigation', 'varied', 'v2', 'v3', 'heldout', 'answers', 'conversation', 'broad', 'harder', 'features', 'capability', 'grounding', 'all'), default='requests',
+    parser.add_argument('--suite', choices=('requests', 'navigation', 'varied', 'v2', 'v3', 'heldout', 'answers', 'conversation', 'broad', 'harder', 'features', 'capability', 'grounding', 'all'), required=True,
                         help='requests: the reported requests; navigation: getting somewhere by clicking; '
                              'varied: new random tasks across many apps every run')
     parser.add_argument('--tasks', type=int, default=14, help='varied suite: how many random tasks')
     parser.add_argument('--seed', type=int, help='varied suite: repeat an earlier run (printed at the start)')
     parser.add_argument('--max-turns',type=int,help='diagnostic prefix only: first N turns of each selected conversation')
     args = parser.parse_args()
+    if args.suite not in SAFE_LEGACY_SUITES:
+        parser.error('That legacy suite contains private-application tasks and is disabled. Use scripts/human_eval.py with owned fixtures, or explicitly select a safe diagnostic suite.')
     if args.max_turns is not None and args.max_turns<1:
         parser.error('--max-turns must be positive')
+    print('Legacy diagnostic suite; results are not a human-workflow capability baseline.', flush=True)
     # A sleeping display locks the screen: its password field pauses screen vision and every task
     # failed as "protected" (live, 2026-10-26). Keep the Mac awake for as long as this run lasts.
     subprocess.Popen(['caffeinate', '-dimsu', '-w', str(os.getpid())])
@@ -1157,7 +1265,7 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     from companion.instance import build_id
     print('build', build_id(), '→', out, flush=True)
-    app = App(ROOT/'.data', out/'app.log')
+    app = App(Path(os.getenv('A11Y_DATA_DIR', str(ROOT/'.data'))), out/'app.log')
     eval_window = EvalWindow()
     if args.suite in ('conversation', 'broad', 'harder', 'features', 'capability', 'grounding'):
         import importlib

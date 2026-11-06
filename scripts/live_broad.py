@@ -275,9 +275,9 @@ end tell''', app, label)
     add('textedit_new', f'Create a new TextEdit document containing just {marker} new document.', 'TextEdit',
         lambda s,e: text().strip() == marker+' new document', lambda r: le.activate('Finder'))
     multiline = marker+'\nShopping for Saturday\nBread and apples'
-    # Typing waits for the user's confirmation, which the eval channel cannot give: checked by its proposal instead.
+    # A proposal or quoted reply does not establish that any document was edited.
     add('textedit_multiline', f'In the blank TextEdit document type these three lines exactly: {multiline}', 'TextEdit',
-        lambda s,e: 'Shopping for Saturday' in answer(e) or text().strip() == multiline, document)
+        lambda s,e: text().strip() == multiline, document)
     add('textedit_bold', 'Make all the text in this document bold.', 'TextEdit',
         lambda s,e: text().strip() == marker and 'bold' in osa('tell application "TextEdit" to return font of first character of front document').lower(),
         lambda r: document(r,marker))

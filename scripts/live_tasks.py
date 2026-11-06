@@ -153,15 +153,13 @@ def build(eval_window, count, seed, only=None):
 
     @family
     def calculator():
-        from companion.arithmetic import evaluate, formatted
         a, b = rng.randint(12, 9999), rng.randint(2, 999)
         op, word = pick([('+', 'plus'), ('-', 'minus'), ('*', 'times'), ('/', 'divided by')])
-        result = formatted(evaluate('%d %s %d' % (a, op, b)))
-        digits = re.sub(r'[^\d]', '', str(result).split('.')[0])
+        result = le.arithmetic_result(a, op, b)
         request = pick(['open calculator and compute {a} {w} {b}', 'use the calculator to work out {a} {w} {b}',
                         'in the Calculator app, what is {a} {w} {b}?', 'calculate {a} {w} {b} on the calculator']).format(a=a, w=word, b=b)
-        return Task('calculator', request, [('answer is '+str(result), lambda s, e: digits in re.sub(r'[^\d]', '', answer(e))),
-                                            ('Calculator in front', front('Calculator'))],
+        return Task('calculator', request, [('answer is '+str(result), lambda s, e: le.number_in_text(answer(e), result)),
+                                            ('Calculator display', lambda s,e: le.calculator_matches(result))],
                     setup=apps_setup, cleanup=['quit Calculator'], wanted_app='Calculator')
 
     @family
