@@ -98,9 +98,19 @@ class StopsAfterLaunchTests(Harness):
         task = ComputerTask('Open Calculator and compute (2+2)*3', automatic=True, goal_mode='inspect')
         for kind in ('launch_app', 'press_control', 'press_control', 'press_control', 'press_control'):
             task.record({'type': kind, 'status': 'submitted'})
-        self.provider.complete_structured.return_value = {'status': 'done', 'message': 'The display shows 4.', 'risk': 'navigation', 'action': None}
+        # Requirement change (2026-11-06, AGENTS.md "no completion without observed evidence"): a done
+        # is always checked against the screen, so the fixture shows the display and that check is its
+        # own call. What this test guards is unchanged: the step decision is asked once, not re-asked.
+        from companion.task_completion import MET_SYSTEM
+        from companion.task_answers import ANSWER_SYSTEM
+        self.regions = [{'text': 'Display: 12', 'x': .2, 'y': .3, 'width': .4, 'height': .05}]
+        decisions = []
+        self.provider.complete_structured.side_effect = lambda system, *args, **kwargs: (
+            {'met': True, 'missing': '', 'evidence': 'Display: 12'} if system == MET_SYSTEM else
+            {'message': 'The display shows 12.'} if system == ANSWER_SYSTEM else
+            decisions.append(1) or {'status': 'done', 'message': 'The display shows 4.', 'risk': 'navigation', 'action': None})
         self.assertEqual(self.propose(task)['status'], 'done')
-        self.assertEqual(self.provider.complete_structured.call_count, 1)
+        self.assertEqual(len(decisions), 1)
 
     def test_notepad_drafting_continues_to_the_editor_after_launch(self):
         self.desktop.bridge.value['controls'] = []
@@ -1340,6 +1350,9 @@ class MenuGoalTests(Harness):
         self.assertEqual((step['action']['type'], step['action']['path']), ('choose_menu', 'View'))
         self.provider.complete_structured.assert_not_called()
         task.record({'type': 'choose_menu', 'label': 'Choose View in Finder', 'status': 'submitted'})
+        # Fixture: an opened menu is now confirmed from the screen, so the screen shows the View menu's items.
+        self.regions = [region('as Icons', .2, .1), region('as List', .2, .15), region('Show Tab Bar', .2, .2)]
+        self.provider.complete_structured.return_value = {'met': True, 'missing': '', 'evidence': 'as List'}
         self.assertEqual(self.propose(task)['status'], 'done')
 
 

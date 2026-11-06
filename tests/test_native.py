@@ -438,10 +438,17 @@ class NativeTests(unittest.TestCase):
         frame = {'image_data': 'data:image/png;base64,'+base64.b64encode(bytes(png)).decode(),
                  'screen': {'x': area.x(), 'y': area.y(), 'width': area.width(), 'height': area.height()},
                  'display_id': 7, 'captured_monotonic': time.monotonic(), 'windows': []}
+        # Fixture: a done is now checked against the screen, so after the press the screen lists the
+        # help results and the third model call is that check, quoting one of them.
+        results = [{'text': text, 'x': .1, 'y': .1+.05*i, 'width': .3, 'height': .03}
+                   for i, text in enumerate(('Accessibility help', 'VoiceOver basics', 'Keyboard shortcuts'))]
         outputs = [{'status': 'action', 'message': 'Search is visible; opening it.', 'risk': 'navigation',
                     'action': {'type': 'press_control', 'control_id': 'control-0'}},
+                   # Fixture: a button press the step model calls navigation is now asked about once
+                   # (ComputerTask.commits) before it may run unconfirmed; this is that answer.
+                   {'effect': 'navigate'},
                    {'status': 'done', 'message': 'Help results are listed.', 'risk': 'navigation', 'action': None},
-                   {'status': 'done', 'message': 'Help results are listed.', 'risk': 'navigation', 'action': None}]
+                   {'met': True, 'missing': '', 'evidence': 'Accessibility help'}]
         class Provider:
             complete_structured = Mock(side_effect=outputs)
         self.service.provider = Provider()
@@ -451,6 +458,7 @@ class NativeTests(unittest.TestCase):
             shown.append(message)
             return present(message, *args, **kwargs)
         def submitted(proposal):
+            frame['text_regions'] = results
             return {'type': proposal['type'], 'label': proposal['label'], 'status': 'submitted'}
         start = len(self.window.transcript.toPlainText())
         with patch.object(self.window.vision, 'capture', side_effect=lambda *args, **kwargs: deepcopy(frame)), \
@@ -493,14 +501,26 @@ class NativeTests(unittest.TestCase):
         frame = {'image_data': 'data:image/png;base64,iVBORw0KGgo=', 'display_id': 7, 'windows': [],
                  'screen': {'x': area.x(), 'y': area.y(), 'width': area.width(), 'height': area.height()},
                  'captured_monotonic': time.monotonic(), 'text_regions': []}
+        # Fixture: a done is now checked against the screen, so once Teams is open the screen says
+        # what the model reports, and the check and the answer written from that text have replies.
+        from companion.task_answers import ANSWER_SYSTEM
+        from companion.task_completion import MET_SYSTEM
+        teams = [{'text': text, 'x': .1, 'y': .1+.05*i, 'width': .3, 'height': .03}
+                 for i, text in enumerate(('Microsoft Teams', 'Chat', 'No new notifications'))]
+        def reply(system, *args, **kwargs):
+            if system == MET_SYSTEM:
+                return {'met': True, 'missing': '', 'evidence': 'No new notifications'}
+            if system == ANSWER_SYSTEM:
+                return {'message': 'Activity shows no new notifications.'}
+            return {'status': 'done', 'message': 'Activity shows no new notifications.', 'risk': 'navigation', 'action': None}
         class Provider:
             interpret_request = Mock(side_effect=AssertionError('"open X" must not need the interpreter'))
             classify_task_goal = Mock(return_value='inspect')
-            complete_structured = Mock(return_value={'status': 'done', 'message': 'Activity shows no new notifications.',
-                                                     'risk': 'navigation', 'action': None})
+            complete_structured = Mock(side_effect=reply)
         self.service.provider = Provider()
         executed = []
         def submitted(proposal):
+            frame['text_regions'] = teams
             executed.append((proposal['type'], Provider.complete_structured.call_count))
             return {'type': proposal['type'], 'label': proposal['label'], 'status': 'submitted', 'native_result': {'submitted': True}}
         self.window.input.setPlainText('open up teams in a new safari window and see if ive got any new notifications')

@@ -12,11 +12,12 @@ from .timing import timing
 # live in their own modules; every name stays importable from here.
 from .task_prompts import (  # noqa: F401 - re-exported: imported and patched as computer_task.<name>
     TOOLS, SCHEMA, _action_step, _terminal_step, UNSUPPORTED, schema_for,
-    FILE_INTERACTION_SYSTEM, FILE_INTERACTION_SCHEMA, PLAN_SYSTEM, PLAN_SCHEMA, REPORT_PASS,
+    FILE_INTERACTION_SYSTEM, FILE_INTERACTION_SCHEMA, COMMIT_SYSTEM, COMMIT_SCHEMA, PLAN_SYSTEM, PLAN_SCHEMA, REPORT_PASS,
     IMAGE_PASS, SYSTEM)
 from .task_completion import (  # noqa: F401 - re-exported: imported and patched as computer_task.<name>
-    MET_SYSTEM, MET_SCHEMA, structured_facts, completion_evidence, completion_values,
-    completion_schema, completion_result, CompletionChecks)
+    MET_SYSTEM, MET_SCHEMA, CHECK_KINDS, NOTHING_MISSING, NEGATIONS, structured_facts, completion_evidence, completion_values,
+    completion_schema, completion_result, listed_checks, required_checks, check_proven, unproven_parts, uncovered_names,
+    _words, _tokens, _asked, _asked_text, _given_names, _negated, _hint_tried, _finder_place, CompletionChecks)
 from .task_answers import (  # noqa: F401 - re-exported: imported and patched as computer_task.<name>
     ANSWER_SYSTEM, ANSWER_SCHEMA, AnswerWriting)
 from .task_fallbacks import (  # noqa: F401 - re-exported: imported and patched as computer_task.<name>
@@ -193,6 +194,16 @@ def observe_desktop(desktop, **kwargs):
     return value if isinstance(value,dict) else desktop.context()
 
 
+def on_site(page, wanted):
+    """Whether the address `page` is on the site the address `wanted` names: its host, a subdomain
+    of it, or a host that site is known to use. An empty or host-less address is never a match."""
+    from urllib.parse import urlsplit
+    from .web_apps import same_site_hosts
+    host = lambda value: (urlsplit(str(value)).hostname or '').removeprefix('www.')
+    hosts = {host(wanted)} | {h.removeprefix('www.') for h in same_site_hosts(wanted)}
+    return bool(host(page)) and (host(page) in hosts or any(host(page).endswith('.'+h) for h in hosts if h))
+
+
 def observation_state(snapshot,visual):
     window=snapshot.get('window') or {}
     finder=snapshot.get('finder') or {}
@@ -222,7 +233,57 @@ def screen_signature(regions, snapshot):
     row read as "nothing changed", and the fallback menu pick sorted the list under it (live, scroll batch)."""
     chosen = [str(name) for name in (snapshot.get('finder') or {}).get('selection') or []] + \
         [str(e.get('name') or e.get('text') or '') for e in snapshot.get('selected') or [] if isinstance(e, dict)]
+    # The chosen tab or option, as the accessibility snapshot reports it: switching tabs can change no word.
+    chosen += ['\x1e'+str(t.get('label', '')) for t in snapshot.get('targets') or [] if isinstance(t, dict) and t.get('selected') is True]
     return hashlib.sha256('\n'.join(sorted(r.get('text', '') for r in regions)+['\x1f']+chosen).encode()).hexdigest()[:16]
+
+
+# Controls that hold a state of their own. Pressing one changes how it looks (a tick, a knob, a
+# highlighted tab), often without changing a single word on screen.
+STATE_KINDS = frozenset({'checkbox', 'switch', 'tab or option', 'tab'})
+STATE_ROLES = frozenset(role for role, kind in ROLE_NAMES.items() if kind in STATE_KINDS)
+
+
+def region_look(image_data, rect):
+    """A fingerprint of how one rectangle of the capture looks (rect in image fractions): colours
+    on a grid of at most a few thousand points, coarsened so that compression noise is not a
+    change. None when the capture cannot be read. Only the hash is kept, never pixels."""
+    import base64
+    try:
+        from PyQt6.QtGui import QImage
+        image = QImage.fromData(base64.b64decode(image_data.split(',', 1)[1]))
+        left, top = int(rect['x']*image.width()), int(rect['y']*image.height())
+        width, height = int(rect['width']*image.width()), int(rect['height']*image.height())
+    except (ImportError, ValueError, IndexError, AttributeError, TypeError, KeyError):
+        return None
+    if image.isNull() or width < 2 or height < 2:
+        return None
+    stride = max(2, math.isqrt(width*height//4000))
+    colours = bytearray()
+    for y in range(max(0, top), min(image.height(), top+height), stride):
+        for x in range(max(0, left), min(image.width(), left+width), stride):
+            colours.extend(((image.pixel(x, y) >> 4) & 0x0F0F0F).to_bytes(3, 'big'))
+    return hashlib.sha256(colours).hexdigest()[:16] if colours else None
+
+
+def state_control(action, marks, snapshot, screen):
+    """Where the state-holding control this click or press acts on is: {'label', 'rect'} with rect in
+    image fractions, or None when the target is not a checkbox, switch, tab or option."""
+    def kind(mark):
+        return mark.get('kind', '').removeprefix('page ').split(',')[0]
+    if action.get('type') == 'click_point' and action.get('button', 'left') == 'left':
+        inside = [m for m in marks if kind(m) in STATE_KINDS and m['x'] <= action.get('x', -1) < m['x']+m['width']
+                  and m['y'] <= action.get('y', -1) < m['y']+m['height']]
+        if inside:
+            mark = min(inside, key=lambda m: m['width']*m['height'])
+            return {'label': mark['label'], 'rect': {key: mark[key] for key in ('x', 'y', 'width', 'height')}}
+    if action.get('type') == 'press_control' and screen and screen.get('width') and screen.get('height'):
+        control = next((c for c in (snapshot.get('controls') or []) if isinstance(c, dict) and c.get('id') == action.get('control_id')), None)
+        b = (control or {}).get('bounds') or {}
+        if control and control.get('role') in STATE_ROLES and all(isinstance(b.get(k), (int, float)) for k in ('x', 'y', 'width', 'height')):
+            return {'label': control.get('label', ''), 'rect': {'x': (b['x']-screen.get('x', 0))/screen['width'], 'y': (b['y']-screen.get('y', 0))/screen['height'],
+                                                             'width': b['width']/screen['width'], 'height': b['height']/screen['height']}}
+    return None
 
 
 def compact_desktop(snapshot):
@@ -372,6 +433,11 @@ FINDER_SORT = re.compile(r'\bsort(?:ed)?\b.*?\bby\s+(?P<column>name|kind|date ad
                          r'|\b(?P<newest>newest|latest|most recently)\s+(?:added|first)\b', re.I)
 SORT_TITLES = {'name': 'Name', 'kind': 'Kind', 'date added': 'Date Added', 'date modified': 'Date Modified', 'date created': 'Date Created',
                'date last opened': 'Date Last Opened', 'last opened': 'Date Last Opened', 'size': 'Size', 'tags': 'Tags'}
+# Finder's own name for a list view's sort column ("name column"), per asked column. Date Added and
+# Date Last Opened have no such name, so code cannot compare them (see sort_observed).
+SORT_COLUMNS = {'Name': 'name', 'Kind': 'kind', 'Date Modified': 'modification date', 'Date Created': 'creation date',
+                'Size': 'size', 'Tags': 'label'}
+SORT_COLUMN_NAMES = set(SORT_COLUMNS.values()) | {title.casefold() for title in SORT_COLUMNS} | {'version', 'comment', 'none'}
 # "What's the fifth story on Hacker News?": the line numbered 5 on screen, read in code (the model
 # clicked a story instead of reading the list, live v3).
 NTH_ITEM = re.compile(r"\b(?:what(?:'s|s| is| are)|tell me|read(?: me)?|which is|give me)\b.*?\bthe\s+(?P<n>first|second|third|fourth|fifth|"
@@ -445,6 +511,22 @@ def labelled_targets(want, regions, controls, screen):
             if not any(abs(x-fx) < .03 and abs(y-fy) < .03 for fx, fy, _ in found):
                 found.append((x, y, None))
     return found
+
+
+def named_on_screen(label, regions, snapshot):
+    """Whether something on screen carries this name: a line of text or an accessible target that has
+    all of the label's words, or most of them and nothing else ("Zelcroft project" for "Zelcroft
+    project folder"), the way snap_click matches a label to a place."""
+    want = label_words(label)
+    if not want:
+        return True  # nothing to look for
+    texts = [r.get('text', '') for r in regions if isinstance(r, dict)]
+    texts += [t.get('label', '') for key in ('targets', 'controls') for t in snapshot.get(key) or [] if isinstance(t, dict)]
+    for text in texts:
+        words = label_words(text)
+        if words and (set(want) <= set(words) or len(''.join(words)) >= 4 and set(words) <= set(want) and len(words)*2 >= len(want)):
+            return True
+    return False
 
 
 def pixel_model(provider):
@@ -597,6 +679,16 @@ def validate_step(raw, desktop, snapshot, *, goal_mode=None, screen=None, text_r
     return dict(raw, message=message, action=action)
 
 
+def cancel_argument(method, cancel):
+    """{'cancel': cancel} for a planner method that declares it (plan_task, classify_task_goal), else {}.
+    Stop then ends the request itself instead of waiting for the reply."""
+    import inspect
+    try:
+        return {'cancel': cancel} if 'cancel' in inspect.signature(method).parameters else {}
+    except (TypeError, ValueError):
+        return {}
+
+
 def accepts_cancel(provider):
     import inspect
     try:
@@ -632,6 +724,7 @@ class ComputerTask(CompletionChecks, AnswerWriting, Fallbacks):
         from .arithmetic import keypad
         sequence = keypad(self.goal)
         self.keypad, self.keypad_expr = (sequence[0], sequence[1]) if sequence else (None, None)
+        self.keypad_pressed = []  # labels of the keys proposed so far; each needs its receipt (see keypad_step)
         self.goal_mode = goal_mode if goal_mode in ('inspect', 'draft', 'change') else None
         self.view_opened = not NOTIFICATION_GOAL.search(self.goal)
         # "Click on Chat": one exactly labelled target is clicked in code (see click_step).
@@ -667,6 +760,7 @@ class ComputerTask(CompletionChecks, AnswerWriting, Fallbacks):
     def stop(self, status='stopped'):
         self.status = status
         self.pending = None
+        self.findings = []  # lines read from earlier screens (keep_findings) end with the task
         self.cancelled.set()
 
     def keypad_step(self, desktop, snapshot):
@@ -677,6 +771,15 @@ class ComputerTask(CompletionChecks, AnswerWriting, Fallbacks):
         from .arithmetic import evaluate, find_key, formatted
         if not self.keypad:
             self.keypad = None
+            # Every key this method proposed must have come back as a press Calculator accepted,
+            # in order. A press refused before it ran leaves no receipt while its key is already
+            # consumed; then the sum was not entered and the model looks at the display instead.
+            # (Only key presses are lined up: switching back to Calculator between two keys is not one.)
+            pressed = self.keypad_pressed
+            presses = [receipt for receipt in self.receipts if receipt.get('type') == 'press_control'][-len(pressed):] if pressed else []
+            if (not pressed or [receipt.get('label') for receipt in presses] != pressed
+                    or any(receipt.get('status') == 'failed' for receipt in presses)):
+                return None
             return {'status': 'done', 'action': None,
                     'message': 'Entered '+self.keypad_expr+' in Calculator. The answer is '+formatted(evaluate(self.keypad_expr))+'.'}
         controls = snapshot.get('controls') or []
@@ -692,6 +795,7 @@ class ComputerTask(CompletionChecks, AnswerWriting, Fallbacks):
                              desktop, snapshot, goal_mode=self.goal_mode)
         self.keypad.pop(0)
         action = dict(step['action'], sequence=True)
+        self.keypad_pressed.append(action.get('label'))
         self.pending = action
         return {'status': 'action', 'message': step['message'], 'action': action, 'review': not self.automatic,
                 'visual_capture': None}
@@ -726,7 +830,7 @@ class ComputerTask(CompletionChecks, AnswerWriting, Fallbacks):
         return {'status': 'action', 'message': step['message'], 'action': action,
                 'review': not self.automatic, 'visual_capture': visual}
 
-    def click_step(self, desktop, snapshot, regions, visual, image_data, vision):
+    def click_step(self, desktop, snapshot, regions, visual, image_data, vision, provider=None):
         """The click a click-only goal asks for, when exactly one place carries that label.
 
         The model is not needed to find "Chat" when the accessibility tree or OCR shows one
@@ -765,10 +869,15 @@ class ComputerTask(CompletionChecks, AnswerWriting, Fallbacks):
         # What the screen looked like: its text, and the pixels around the target (a checkbox can
         # change without any text changing).
         self.clicked_text = (sorted(region.get('text', '') for region in regions), (x, y), guard.get('region_hash'))
+        review = not self.automatic or self.review_needed(action, 'navigation', snapshot) or bool(CONFIRMING.search(action.get('label', '')))
+        if not review and provider is not None:
+            # "Click Place order": the user named the button, and pressing it still commits something.
+            kind = ROLE_NAMES.get(control.get('role')) if control is not None else self.press_kind(action, [], snapshot, desktop, visual)
+            review = self.commits(action, kind, snapshot, provider, {'cancel': self.cancelled} if accepts_cancel(provider) else {})
+            if self.cancelled.is_set():
+                raise ValueError('Computer task stopped.')
         self.pending = action
-        return {'status': 'action', 'message': step['message'], 'action': action,
-                'review': not self.automatic or self.review_needed(action, 'navigation', snapshot) or bool(CONFIRMING.search(action.get('label', ''))),
-                'visual_capture': visual}
+        return {'status': 'action', 'message': step['message'], 'action': action, 'review': review, 'visual_capture': visual}
 
     def focused_click_step(self, desktop, snapshot, regions, visual, image_data, vision, provider):
         """Unresolved single pointer request: interpret scope, then locate, never plan actions."""
@@ -953,6 +1062,9 @@ class ComputerTask(CompletionChecks, AnswerWriting, Fallbacks):
         def check_active():
             if self.cancelled.is_set() or not desktop.enabled or not vision.enabled or desktop.generation != desktop_generation or vision.generation != vision_generation:
                 raise ValueError('Computer task stopped or access was paused. No next action was submitted.')
+        # A reading goal: the reply is written from this view's own text, so no second
+        # model call judges it (a verifier here made it two calls and could refuse a view
+        # that had opened).
         answer = self.screen_answer(provider, snapshot, regions, '', cancel_kwargs)
         check_active()
         return {'status': 'done', 'message': answer, 'action': None} if answer else None
@@ -984,15 +1096,31 @@ class ComputerTask(CompletionChecks, AnswerWriting, Fallbacks):
         return {'status': 'action', 'message': action.get('label') or 'Sorting.', 'action': action,
                 'review': not self.automatic, 'visual_capture': None}
 
-    def check_last_click(self, snapshot=None):
+    def check_last_click(self, snapshot=None, image_data=None):
         """Did the last click change anything? If the screen reads the same as when it was chosen, it
         did nothing: the model is told so, and that target is left out while the screen stays the same,
-        so the next step tries something else instead of the same thing again."""
+        so the next step tries something else instead of the same thing again.
+
+        A checkbox, switch, tab or option is judged by itself, not by the words around it: ticking
+        "Remind me about due dates" changed no text, was reported as "nothing changed", and the next
+        click unticked it (sim, form). Its own rectangle looking different is the change."""
         last = self.receipts[-1] if self.receipts else None
         if (not last or last.get('type') not in ('click_point', 'press_control') or 'effect' in last
                 or last.get('screen') is None or self.screen_seen is None):
             return
         unchanged = last['screen'] == self.screen_seen
+        look = last.get('look')
+        if look and 'state_changed' not in last and image_data:
+            now = region_look(image_data, look['rect'])
+            # With other words on screen too (a switch that also reads "On"), the rectangle is the same
+            # control only while a target of that name is still there.
+            label = ' '.join(str(last.get('label', '')).casefold().split())
+            still = unchanged or any(' '.join(str(t.get('label', '')).casefold().split()) == label
+                                     for key in ('targets', 'controls') for t in (snapshot or {}).get(key) or [] if isinstance(t, dict))
+            last['state_changed'] = bool(now) and now != look['look'] and still
+            if last['state_changed'] and unchanged:
+                last['effect'] = 'its own state changed (a tick or switch adds no text): clicking it again would undo that'
+                return
         if unchanged and (snapshot or {}).get('focused_role') in ('AXTextField', 'AXSearchField', 'AXTextArea', 'AXComboBox'):
             # Clicking into a field changes nothing visible but worked: say so, so the next step types
             # (the Notes search field was clicked twice and the task stopped, live).
@@ -1043,6 +1171,7 @@ class ComputerTask(CompletionChecks, AnswerWriting, Fallbacks):
             return step
         if not isinstance(hit, dict):
             return step
+        self.point_hit = (action['x'], action['y'], hit)  # reused by press_kind: one native lookup per click
         # System Settings content controls can change preferences even when the
         # model labels a click as navigation. Only native sidebar/toolbar ancestry
         # establishes a plain navigation click; other content needs confirmation.
@@ -1097,6 +1226,44 @@ class ComputerTask(CompletionChecks, AnswerWriting, Fallbacks):
                                  desktop, snapshot, catalog=self._catalog or (), goal=self.goal)
         return dict(step, action=switched['action'], message=switched.get('message', step.get('message')))
 
+
+    def scroll_for_unseen(self, step, desktop, snapshot, regions, visual):
+        """A click at a guessed point, labelled with a name from the goal that nothing on screen carries:
+        the thing is out of view, so scroll until its name shows instead of clicking where it is not.
+
+        "Open the Zelcroft project folder" in a long list: the model clicked the window's title bar,
+        the click did nothing, and the menu fallback chose Go > Enclosing Folder (sim). Only for a name
+        the user gave (a description of an icon is the model's own wording), once per name, and only
+        when macOS says what is under the point and it is not the thing: nothing pressable, or something
+        with another name. Text recognition can miss a name that is there, so a missing name alone (or
+        a platform that cannot say what is under a point) leaves the click as the model chose it."""
+        action = step.get('action') or {}
+        label = str(action.get('label', ''))
+        want = label_words(label)
+        tried = getattr(self, 'scrolled_for', set())
+        bridge, screen = getattr(desktop, 'bridge', None), visual.get('screen') or {}
+        if (step.get('status') != 'action' or action.get('type') != 'click_point' or action.get('button', 'left') != 'left'
+                or len(''.join(want)) < 3 or want in tried or self.queue or not (regions or snapshot.get('targets'))
+                or named_on_screen(label, regions, snapshot) or not hasattr(bridge, 'hit') or not screen.get('width')
+                or not set(want) <= set(re.findall(r"[\w']+", self.goal.casefold()))):
+            return step
+        try:
+            hit = bridge.hit(screen['x']+action['x']*screen['width'], screen['y']+action['y']*screen['height'])
+        except (RuntimeError, ValueError, OSError, KeyError, TypeError):
+            return step
+        if not isinstance(hit, dict):
+            return step
+        title = label_words(str(hit.get('title') or ''))
+        if title and set(want) <= set(title) or not title and (hit.get('role') in ROLE_NAMES or hit.get('finder_item') or hit.get('app')):
+            return step  # the named thing itself, or an unnamed control that may be the icon meant
+        try:
+            scroll = validate_step({'status': 'action', 'message': 'Scrolling to find '+label[:80]+'.', 'risk': 'navigation',
+                                    'action': {'type': 'scroll', 'direction': 'down'}}, desktop, snapshot, goal_mode=self.goal_mode)
+        except (ValueError, ValidationError):
+            return step
+        self.scrolled_for = tried | {want}
+        self.next_queue = [{'scroll_to': label[:120], 'left': 6}]
+        return dict(step, action=scroll['action'], message=scroll['message'], risk='navigation')
 
     def section_step(self, desktop, snapshot):
         """"The first sentence of its History section": the page's own anchor for that heading (#History),
@@ -1177,16 +1344,21 @@ class ComputerTask(CompletionChecks, AnswerWriting, Fallbacks):
             happened = front == wanted['bundle_id']
         elif kind == 'browse_url' and wanted.get('url') and '?' not in wanted['url'] and front == wanted.get('bundle_id'):
             # (a search or "first result" address redirects elsewhere by design: not checked)
-            from urllib.parse import urlsplit
-            from . import mac_apps
-            try:
-                _, url, _ = mac_apps.read_page(front)
-            except (mac_apps.AppError, RuntimeError, OSError, ValueError):
-                return None
-            host = lambda value: (urlsplit(value).hostname or '').removeprefix('www.')
-            from .web_apps import same_site_hosts
-            hosts = {host(wanted['url'])} | {h.removeprefix('www.') for h in same_site_hosts(wanted['url'])}
-            happened = not url or host(url) in hosts or any(host(url).endswith('.'+h) for h in hosts if h)
+            # 'arrived' is set only when an address was compared and is on the site: an unreadable
+            # address proves nothing (see receipt_step). The observation's own address can confirm it,
+            # and is the only source for Windows browsers and Firefox, whose page read below is
+            # unavailable. It never starts a retry: that stays with the page read, as before.
+            if on_site((snapshot.get('window') or {}).get('url') or '', wanted['url']):
+                last['arrived'] = True
+            else:
+                from . import mac_apps
+                try:
+                    _, url, _ = mac_apps.read_page(front)
+                except (mac_apps.AppError, RuntimeError, OSError, ValueError):
+                    return None
+                happened = not url or on_site(url, wanted['url'])
+                if url and happened:
+                    last['arrived'] = True
         if happened:
             return None
         self.navigation_retried = last
@@ -1345,6 +1517,64 @@ class ComputerTask(CompletionChecks, AnswerWriting, Fallbacks):
         self.pending = action
         return {'status': 'action', 'message': 'Opening the '+menu+' menu.', 'action': action, 'review': not self.automatic, 'visual_capture': None}
 
+    def receipt_step(self, desktop, snapshot):
+        """The code steps that report done from their own receipts, as (step, observed).
+
+        A submitted action is not its result. For a step that says done, observed is
+        True   when native state shows the result: the browser is on each address this task opened
+               (navigation_check compared them), the page address changed with every back/forward
+               press, or Finder's list is sorted by the asked column;
+        a str  when native state shows it did not happen (what it shows, in words). Nothing may
+               overrule that, the verifier included;
+        None   when native state cannot say (an opened menu, an unreadable address, icon view or
+               grouping): the caller (propose) checks the screen with the verifier."""
+        last = self.receipts[-1] if self.receipts else {}
+        def judged(step, observed):
+            if step['status'] == 'done' and last.get('status') == 'failed':
+                return step, 'the last step did not go through'
+            return step, observed
+        step = self.sites_step(desktop, snapshot)
+        if step is not None:
+            from .web_apps import named_addresses
+            arrived = {(receipt.get('wanted') or {}).get('url') for receipt in self.receipts
+                       if receipt.get('type') == 'browse_url' and receipt.get('arrived') is True}
+            return judged(step, all(address in arrived for address in named_addresses(self.goal)) or None)
+        step = self.tab_step(desktop, snapshot)
+        if step is not None:
+            # The switch itself must be the last thing that ran: an earlier arrival is not this one.
+            return judged(step, (last.get('type') == 'browse_url' and last.get('arrived') is True) or None)
+        step = self.history_step(desktop, snapshot)
+        if step is not None:
+            pages = [str((snapshot.get('window') or {}).get('url') or '')[:1024]]
+            for receipt in reversed(self.receipts):
+                if not self.is_history(receipt):
+                    break
+                pages.insert(0, receipt.get('from_url'))
+            if len(pages) < 2 or not all(pages):
+                return judged(step, None)
+            moved = all(before != after for before, after in zip(pages, pages[1:]))  # every press, not just one
+            return judged(step, True if moved else 'the page address did not change')
+        step = self.finder_sort_step(desktop, snapshot)
+        if step is not None:
+            return judged(step, self.sort_observed(snapshot) if step['status'] == 'done' else None)
+        step = self.menu_step(desktop, snapshot)
+        return (step, None) if step is None else judged(step, None)
+
+    def sort_observed(self, snapshot):
+        """Finder's own sort column against the asked one: True, the contradiction in words, or None
+        when that fact does not describe the result. It belongs to the list view, so it says nothing
+        in icon view, when the items were grouped instead (Finder has no Sort By then), or for a
+        column or a value code has no certain name for."""
+        match = FINDER_SORT.search(self.goal)
+        column = 'Date Added' if match.group('newest') else SORT_TITLES[match.group('column').casefold()]
+        finder = snapshot.get('finder') or {}
+        shown = ' '.join(str(finder.get('sort') or '').casefold().split()).removesuffix(' column')
+        ran = str(((self.receipts[-1] if self.receipts else {}).get('native_result') or {}).get('path') or '')
+        if (column not in SORT_COLUMNS or shown not in SORT_COLUMN_NAMES or 'Group By' in ran
+                or 'list' not in str(finder.get('view') or '').casefold()):
+            return None
+        return True if shown in (SORT_COLUMNS[column], column.casefold()) else 'the folder is not sorted by '+column.casefold()
+
     def expand_tool(self, raw, marks, snapshot=None):
         """type_into / search_in_app / scroll_to → their first primitive now, the rest queued."""
         action = raw.get('action') if isinstance(raw, dict) else None
@@ -1391,7 +1621,8 @@ class ComputerTask(CompletionChecks, AnswerWriting, Fallbacks):
             if 'scroll_to' in item:
                 wanted = item['scroll_to'].casefold()
                 seen = any(wanted in (r.get('text') or '').casefold() for r in regions) or \
-                    any(wanted in (t.get('label') or '').casefold() for t in snapshot.get('targets') or [])
+                    any(wanted in (t.get('label') or '').casefold() for t in snapshot.get('targets') or []) or \
+                    named_on_screen(item['scroll_to'], regions, snapshot)
                 if seen or item['left'] <= 0:
                     self.queue.pop(0)
                     continue
@@ -1423,6 +1654,68 @@ class ComputerTask(CompletionChecks, AnswerWriting, Fallbacks):
             if self.goal_mode == 'draft' and snapshot.get('focused_role') == 'AXTextArea':
                 return False
         return needs_review(action, risk)
+
+    def press_kind(self, action, marks, snapshot, desktop, visual):
+        """What a left click or a press lands on, in the words of ROLE_NAMES ('button', 'link', 'file or
+        folder', ...), from the accessibility snapshot or, for a bare point, from what macOS reports
+        under it. None when nothing says."""
+        if action.get('type') == 'press_control':
+            control = next((c for c in snapshot.get('controls') or [] if isinstance(c, dict) and c.get('id') == action.get('control_id')), None)
+            return ROLE_NAMES.get((control or {}).get('role'))
+        if action.get('type') != 'click_point' or action.get('button', 'left') != 'left':
+            return None
+        inside = [m for m in marks if m.get('kind') != 'text' and m['x'] <= action['x'] < m['x']+m['width'] and m['y'] <= action['y'] < m['y']+m['height']]
+        if inside:
+            return min(inside, key=lambda m: m['width']*m['height'])['kind'].removeprefix('page ').split(',')[0]
+        x, y, hit = getattr(self, 'point_hit', None) or (None, None, None)
+        bridge, screen = getattr(desktop, 'bridge', None), visual.get('screen') or {}
+        if (x, y) != (action['x'], action['y']) and hasattr(bridge, 'hit') and screen.get('width'):
+            try:
+                hit = bridge.hit(screen['x']+action['x']*screen['width'], screen['y']+action['y']*screen['height'])
+            except (RuntimeError, ValueError, OSError, KeyError, TypeError):
+                hit = None
+        if not isinstance(hit, dict):
+            return None
+        return 'file or folder' if hit.get('finder_item') else ROLE_NAMES.get(hit.get('role'))
+
+    def commits(self, action, kind, snapshot, provider, cancel_kwargs):
+        """Whether pressing this button would commit something (order, book, send, save, delete), so
+        that the user confirms it whatever risk the step model gave its own proposal.
+
+        A "Place order" click labelled navigation ran unconfirmed: needs_review rests on that label
+        and a word list. This asks the text model one narrow question about the button alone (its
+        label, app and window, never the goal), once per button, and only for buttons and menu
+        items: links, tabs, fields, list rows and files move around or select, and back/forward and
+        decline buttons are known. commit and unsure both wait for the user; a failed check does too.
+        Controls that commit without being exposed as buttons are not covered here."""
+        label = ' '.join(str(action.get('label', '')).split())
+        if (action.get('type') not in ('click_point', 'press_control') or kind not in ('button', 'menu item')
+                or sum(c.isalpha() for c in label) < 2 or DECLINE.match(label) or self.is_history(action)):
+            return False
+        app = snapshot.get('app') or {}
+        window = str((snapshot.get('window') or {}).get('title', ''))[:120]
+        # Everything the answer was given for is in the key: the same "Apply" in the same window, once a
+        # sheet with a card-number field is up, is another question (review).
+        fields = sum(1 for t in snapshot.get('targets') or [] if isinstance(t, dict) and not t.get('file_item')
+                     and t.get('role') in ('AXTextField', 'AXTextArea', 'AXComboBox', 'AXCheckBox'))
+        key = (app.get('bundle_id'), window, label.casefold(), fields > 0)
+        known = getattr(self, 'commit_checks', {})
+        started, asked = time.monotonic(), key not in known
+        if asked:
+            try:
+                reply = provider.complete_structured(COMMIT_SYSTEM, [{'role': 'user', 'content': json.dumps(
+                    {'button': label[:80], 'app': app.get('name', ''), 'window': window, 'form_fields_on_screen': fields > 0}, ensure_ascii=False)}],
+                    schema=COMMIT_SCHEMA, max_tokens=24, thinking=False, **cancel_kwargs)
+            except (RuntimeError, ValueError, OSError, TypeError):
+                if self.cancelled.is_set():
+                    raise
+                reply = {'effect': 'unsure'}  # not known to be navigation: the user decides
+            effect = reply.get('effect') if isinstance(reply, dict) else None
+            # A reply that is not one of the three answers is not "navigation": the user decides.
+            known[key] = effect if effect in ('navigate', 'commit', 'unsure') else 'unsure'
+            self.commit_checks = known
+        timing('task.commit_check', started, asked=asked, effect=str(known[key]))
+        return known[key] in ('commit', 'unsure')
 
     def named_app(self, snapshot):
         """The installed app the goal names (longest name wins; not browsers), None if none, False if
@@ -1525,8 +1818,10 @@ class ComputerTask(CompletionChecks, AnswerWriting, Fallbacks):
             return None
         try:
             plan = planner(provider, {'goal': self.goal, 'front_app': front, 'front_window': (snapshot.get('window') or {}).get('title', '')[:120],
-                                      'installed_apps': names})
+                                      'installed_apps': names}, **cancel_argument(planner, self.cancelled))
         except (RuntimeError, ValueError, OSError):
+            if self.cancelled.is_set():
+                raise  # stopped while planning: nothing more is observed or asked
             return None
         if not isinstance(plan, dict) or plan.get('start') not in ('app', 'website', 'search', 'current'):
             return None
@@ -1616,6 +1911,39 @@ class ComputerTask(CompletionChecks, AnswerWriting, Fallbacks):
         return bool(label) and any(r.get('screen') == self.screen_seen and r.get('type') == action['type']
                                    and ' '.join(str(r.get('label', '')).casefold().split()) == label
                                    for r in self.receipts[:-1])
+
+    def repeat_check(self, action):
+        """The step just taken worked, and the model proposes the very same step again.
+
+        On a checkbox, switch, tab or option whose own state changed, the same click undoes the
+        result: it is refused (the tick was removed again, sim form). Any other step that visibly
+        worked (the page or the screen changed) may be what the goal needed: "go back to the page
+        before this one" went back twice (sim). The model is asked once per target whether the goal
+        is already reached; a second identical proposal runs, so "next page" three times still works."""
+        last = self.receipts[-1] if self.receipts else {}
+        kind = action.get('type')
+        clicks = ('click_point', 'press_control')
+        same_label = ' '.join(str(action.get('label', '')).casefold().split()) == ' '.join(str(last.get('label', '')).casefold().split())
+        if kind in clicks and last.get('type') in clicks and last.get('state_changed') and same_label and action.get('label'):
+            self.undo_refused = str(action['label'])[:80]
+            raise ValidationError('“'+str(action['label'])[:80]+'” was just clicked and its own state changed. Clicking it again would undo that. '
+                                  'If the goal is reached now, report status=done; otherwise choose a different target.')
+        history = self.is_history(action) and self.is_history(last)
+        if not history and not (kind in clicks and last.get('type') == kind and same_label and len(str(action.get('label', '')).strip()) > 1
+                                and action.get('click_count', 1) == last.get('click_count', 1) and action.get('button', 'left') == last.get('button', 'left')):
+            return
+        moved = bool(last.get('from_url')) and bool(self.page_seen) and last['from_url'] != self.page_seen
+        if last.get('status') == 'failed' or not (moved or last.get('screen') is not None and last.get('screen') != self.screen_seen):
+            return  # it did nothing visible: the "nothing changed" and repeat limits handle that
+        key = 'history' if history else ' '.join(str(action.get('label', '')).casefold().split())
+        asked = getattr(self, 'repeat_asked', set())
+        if key in asked:
+            return
+        self.repeat_asked = asked | {key}
+        what = str(last.get('label') or action.get('label') or 'That step')[:80]
+        raise ValidationError('“'+what+'” already ran and it worked: '+(
+            'the page changed from '+str(last['from_url'])[:200]+' to '+self.page_seen[:200] if moved else 'the screen changed')+
+            '. Do it again only if the goal needs it once more. If what the goal asks for is reached now, report status=done.')
 
     def repeats(self, action):
         """How many times this task already clicked/pressed this target: in a row, or anywhere
@@ -1726,19 +2054,39 @@ class ComputerTask(CompletionChecks, AnswerWriting, Fallbacks):
         if (self.pending or {}).get('type')=='click_point':
             timing('task.click_receipt',time.monotonic(),double_click=(self.pending or {}).get('click_count')==2,
                    file_context='file_parent' in wanted)
-        page = ({'from_url': self.page_seen} if getattr(self, 'page_seen', '') and receipt.get('type') in ('click_point', 'press_control')
+        # (press_key too: back/forward is a key, and its page change is the only native sign that it worked)
+        page = ({'from_url': self.page_seen} if getattr(self, 'page_seen', '') and receipt.get('type') in ('click_point', 'press_control', 'press_key')
                 else {})
         scroll = ({'scroll_view': getattr(self, 'scroll_seen', None),
                    'direction': (self.pending or {}).get('direction', receipt.get('direction'))}
                   if receipt.get('type') == 'scroll' else {})
+        look = getattr(self, 'pending_look', None)
+        look = {'look': look} if look and receipt.get('type') in ('click_point', 'press_control') and receipt.get('status') != 'failed' else {}
+        self.pending_look = None
         self.file_step_context=None
         self.pending = None
         self.receipts.append(dict({key: deepcopy(receipt.get(key)) for key in ('type', 'label', 'key', 'direction', 'status', 'before', 'after', 'native_result', 'effect')
                                    if key != 'effect' or key in receipt},
                                   screen=self.screen_seen, wanted=wanted,
-                                  **scroll, **gesture, **page))
+                                  **scroll, **gesture, **page, **look))
 
     def propose(self, desktop, vision, provider, geometry, *, progress=None):
+        # Verification is reused only within this observation/decision call.
+        # Do not retain private evidence on the task after return or cancellation.
+        self._completion_cache = {}
+        self._completion_stats = {'calls': 0, 'ms': 0}
+        self._found = []
+        try:
+            return self._propose(desktop, vision, provider, geometry, progress=progress)
+        finally:
+            self.__dict__.pop('_completion_cache', None)
+            self.__dict__.pop('_completion_stats', None)
+            found = self.__dict__.pop('_found', [])
+            if found and not self.cancelled.is_set():
+                # Requested facts this screen proved (keep_findings), for the following steps; a few lines.
+                self.findings = (list(getattr(self, 'findings', []))+[line for line in found if line not in getattr(self, 'findings', [])])[-4:]
+
+    def _propose(self, desktop, vision, provider, geometry, *, progress=None):
         if self.cancelled.is_set():
             raise ValueError('Computer task stopped.')
         if len(self.receipts) >= self.max_steps:
@@ -1746,6 +2094,9 @@ class ComputerTask(CompletionChecks, AnswerWriting, Fallbacks):
         if not desktop.enabled or not vision.enabled:
             raise ValueError('Computer tasks need app awareness and local screen vision. Enable them in Settings.')
         desktop_generation, vision_generation = desktop.generation, vision.generation
+        def check_active():
+            if self.cancelled.is_set() or not desktop.enabled or not vision.enabled or desktop.generation != desktop_generation or vision.generation != vision_generation:
+                raise ValueError('Computer task stopped or access was paused. No next action was submitted.')
         step_started = time.monotonic()
         stages = {}
         observed_at = time.monotonic()
@@ -1759,11 +2110,18 @@ class ComputerTask(CompletionChecks, AnswerWriting, Fallbacks):
             self.initial_browser_counts = dict(snapshot['browser'])
         started = self.plan_start(desktop, snapshot, provider)
         if started is not None:
+            try:
+                check_active()  # planning is a model call: stopped or paused meanwhile, its opening is not offered
+            except ValueError:
+                self.pending = None
+                raise
             timing('task.step.summary', step_started, step=len(self.receipts)+1, status='action', code='plan_start')
             return started
         if self.keypad is not None:
             keyed = self.keypad_step(desktop, snapshot)
             if keyed is not None:
+                # Done here is code's own evidence (keypad_step): each exact key has an accepted
+                # press and the result is computed, so no screenshot or model call is spent.
                 if keyed['status'] != 'action':
                     return {'status': keyed['status'], 'message': keyed['message'], 'action': None}
                 return keyed
@@ -1798,7 +2156,42 @@ class ComputerTask(CompletionChecks, AnswerWriting, Fallbacks):
         regions = screen_text(visual, snapshot)
         self.screen_seen = screen_signature(regions, snapshot)
         self.page_seen = str((snapshot.get('window') or {}).get('url') or '')[:1024]
-        self.check_last_click(snapshot)
+        cancel_kwargs = {'cancel': self.cancelled} if accepts_cancel(provider) else {}
+        def finish(step, code, *, observed=True):
+            """Where a step leaves once the screen was read: one cancellation check, one timing record.
+
+            A 'done' arrives with its evidence already established by the path that made it: code
+            observed the result (a changed screen after its click, a numbered line it read, an
+            address it compared), the verifier quoted current data (goal_met, still_missing), or
+            the reply was written from the text of the view just opened (view_answer, a section).
+            The exception is a code step that knows only that its own action was submitted
+            (receipt_step), which passes what native state says about the result as `observed`:
+            True stands; a contradiction (a str) ends the step without asking anyone; None is
+            checked here by the verifier, once. A path that has evidence never pays for that call."""
+            check_active()
+            if step['status'] == 'done' and isinstance(observed, str):
+                step = {'status': 'needs_user', 'action': None, 'message': 'That was sent, but '+observed+'.'}
+            elif step['status'] == 'done' and observed is not True:
+                missing = self.still_missing(provider, snapshot, regions, cancel_kwargs)
+                check_active()
+                if missing:
+                    step = {'status': 'needs_user', 'action': None,
+                            'message': 'That was sent, but I could not confirm the result: '+missing[:160].rstrip('. ')+'.'}
+            stats = self._completion_stats
+            stages['verification_calls'] = stats['calls']
+            stages['verification_ms'] = stats['ms']
+            if 'model' in stages:
+                # Only steps the step model decided are kept on the task (benchmark_pipeline reads them).
+                stages['total_ms'] = round((time.monotonic()-step_started)*1000)
+                self.timings.append(stages)
+            timing('task.step.summary', step_started, step=len(self.receipts)+1, status=step['status'], code=code,
+                   **{key: value for key, value in stages.items() if key != 'model'},
+                   model_calls=len(stages.get('model', [])),
+                   model_ms=[call['ms'] for call in stages.get('model', [])],
+                   model_modes=[call['mode'] for call in stages.get('model', [])])
+            return step
+        self.pending_look = None
+        self.check_last_click(snapshot, image_data)
         self.check_last_scroll(snapshot, regions)
         result = self.click_result(regions, image_data, visual, vision)
         if result is not None:
@@ -1812,10 +2205,12 @@ class ComputerTask(CompletionChecks, AnswerWriting, Fallbacks):
                 snapshot = desktop.context()
                 visual = vision.capture(provider, x=geometry['x'], y=geometry['y'], desktop=snapshot, fast_text=True)
                 image_data = visual.pop('image_data', None)
-                result = self.click_result(screen_text(visual, snapshot), image_data, visual, vision)
+                regions = screen_text(visual, snapshot)
+                result = self.click_result(regions, image_data, visual, vision)
             self.clicked_text = None
-            timing('task.step.summary', step_started, step=len(self.receipts)+1, status=result['status'], code='click_result')
-            return result
+            # "Clicked X." is said after code saw the text or the pixels at X change. A list-row
+            # click is the one case that reports the click from its receipt alone (click_result).
+            return finish(result, 'click_result')
         from .eval_control import step_shot
         step_shot(image_data, len(self.receipts)+1, None, 'observed', observation=snapshot, screen=visual.get('screen'))  # evaluation only: what each step saw, code steps too
         if self.goal_mode == 'inspect' and finder_name_editor(snapshot):
@@ -1825,35 +2220,47 @@ class ComputerTask(CompletionChecks, AnswerWriting, Fallbacks):
                                   'risk':'navigation', 'action':{'type':'press_key','key':'escape'}},desktop,snapshot)
             self.pending = step['action']
             return dict(step, review=not self.automatic, visual_capture=visual)
-        met = self.goal_met(provider, snapshot, regions, {'cancel': self.cancelled} if accepts_cancel(provider) else {})
+        met = self.goal_met(provider, snapshot, regions, cancel_kwargs, check_active=check_active)
         if met is not None:
-            timing('task.step.summary', step_started, step=len(self.receipts)+1, status='done', code='goal_met')
-            return met
+            return finish(met, 'goal_met')
         viewed = self.view_step(desktop, snapshot, regions, visual, image_data, vision)
         if viewed is not None:
             return viewed
         listed = self.nth_item_answer(regions) if self.receipts else None  # once the page is open
         if listed is not None:
-            timing('task.step.summary', step_started, step=len(self.receipts)+1, status='done', code='nth_item')
-            return listed
+            return finish(listed, 'nth_item')
         read = self.view_answer(provider, snapshot, regions, {'cancel': self.cancelled} if accepts_cancel(provider) else {},
                                 desktop, vision, desktop_generation, vision_generation)
         if read is not None:
-            timing('task.step.summary', step_started, step=len(self.receipts)+1, status=read['status'], code='view_answer')
-            return read
+            return finish(read, 'view_answer')
         opened = (self.navigation_check(desktop, snapshot)
-                  or self.settings_pane_step(desktop, snapshot, provider, {'cancel': self.cancelled} if accepts_cancel(provider) else {})
-                  or self.new_document_step(desktop, snapshot) or self.section_step(desktop, snapshot) or self.sites_step(desktop, snapshot) or self.tab_step(desktop, snapshot) or self.history_step(desktop, snapshot) or self.finder_sort_step(desktop, snapshot)
-                  or self.menu_step(desktop, snapshot) or self.menu_pick_step(desktop, snapshot, provider, {'cancel': self.cancelled} if accepts_cancel(provider) else {}, regions))
+                  or self.settings_pane_step(desktop, snapshot, provider, cancel_kwargs)
+                  or self.new_document_step(desktop, snapshot) or self.section_step(desktop, snapshot))
+        observed = True
+        if opened is None:
+            opened, observed = self.receipt_step(desktop, snapshot)
+            for _ in range(3):  # a page or a folder can take a moment to show what the key or command did
+                if opened is None or opened['status'] != 'done' or not isinstance(observed, str):
+                    break
+                time.sleep(0.5)
+                check_active()
+                snapshot = observe_desktop(desktop, targets=True)
+                visual = vision.capture(provider, x=geometry['x'], y=geometry['y'], desktop=snapshot, fast_text=True)
+                image_data = visual.pop('image_data', None)
+                check_active()
+                regions = screen_text(visual, snapshot)
+                self.screen_seen = screen_signature(regions, snapshot)
+                self.page_seen = str((snapshot.get('window') or {}).get('url') or '')[:1024]
+                opened, observed = self.receipt_step(desktop, snapshot)
+        if opened is None:
+            opened, observed = self.menu_pick_step(desktop, snapshot, provider, cancel_kwargs, regions), True  # its done is already verified
         if opened is not None:
-            timing('task.step.summary', step_started, step=len(self.receipts)+1, status=opened['status'], code='menu')
             if opened['status'] == 'done' and opened.get('message') == 'Read from the screen.' and regions:
-                answer = self.screen_answer(provider, snapshot, regions, opened['message'],
-                                            {'cancel': self.cancelled} if accepts_cancel(provider) else {})
+                answer = self.screen_answer(provider, snapshot, regions, opened['message'], cancel_kwargs)
                 opened = dict(opened, message=answer or 'The section is open on the page.')
-            return opened
+            return finish(opened, 'code_step', observed=observed)
         clicked = (self.row_step(desktop, snapshot, visual, image_data, vision)
-                   or self.click_step(desktop, snapshot, regions, visual, image_data, vision))
+                   or self.click_step(desktop, snapshot, regions, visual, image_data, vision, provider))
         if clicked is not None:
             from .eval_control import step_shot
             step_shot(image_data, len(self.receipts)+1, clicked.get('action'), 'code', observation=snapshot, screen=visual.get('screen'))
@@ -1874,7 +2281,7 @@ class ComputerTask(CompletionChecks, AnswerWriting, Fallbacks):
         if self.goal_mode is None:
             classify_at = time.monotonic()
             classifier = getattr(type(provider), 'classify_task_goal', None)
-            self.goal_mode = classifier(provider, self.goal) if classifier else 'unspecified'
+            self.goal_mode = classifier(provider, self.goal, **cancel_argument(classifier, self.cancelled)) if classifier else 'unspecified'
             stages['classify_ms'] = round((time.monotonic()-classify_at)*1000)
             if self.cancelled.is_set() or not desktop.enabled or not vision.enabled or desktop.generation != desktop_generation or vision.generation != vision_generation:
                 raise ValueError('Computer task stopped or access was paused. No next action was submitted.')
@@ -1919,17 +2326,17 @@ class ComputerTask(CompletionChecks, AnswerWriting, Fallbacks):
                          **({'worked_before': self.worked_before} if self.worked_before else {}),
                          'authorization': 'The user requested this goal. Opening apps and browser navigation toward it are already authorized.',
                          'installed_apps': self.app_names(desktop, snapshot)}, ensure_ascii=False, separators=(',', ':'))},
-                    {'role': 'user', 'content': json.dumps({'actions_taken': history, 'desktop': model_desktop, 'visual_context': model_visual},
+                    {'role': 'user', 'content': json.dumps({'actions_taken': history,
+                         # Lines the completion check already accepted on earlier screens (keep_findings): the model
+                         # went back for the ticket price it had read instead of reporting both facts (sim).
+                         **({'already_found_for_this_goal_on_earlier_screens': list(self.findings)} if getattr(self, 'findings', None) else {}),
+                         'desktop': model_desktop, 'visual_context': model_visual},
                                                            ensure_ascii=False, separators=(',', ':'))}]
         context_chars = sum(len(message['content']) for message in messages)
         timing('task.context.prepared', observed_at, step=len(self.receipts)+1, text_chars=context_chars)
         stages['context_chars'] = context_chars
         stages['model'] = []
         cancel_kwargs = {'cancel': self.cancelled} if accepts_cancel(provider) else {}
-        def check_active():
-            if self.cancelled.is_set() or not desktop.enabled or not vision.enabled or desktop.generation != desktop_generation or vision.generation != vision_generation:
-                raise ValueError('Computer task stopped or access was paused. No next action was submitted.')
-
         model_image = None
         correction = None
         control_ids = [] if marks else [c['id'] for c in snapshot.get('controls') or [] if isinstance(c, dict) and c.get('id') and c.get('enabled', True)]
@@ -1970,6 +2377,7 @@ class ComputerTask(CompletionChecks, AnswerWriting, Fallbacks):
                 desktop.collect_once(targets=True)
                 snapshot = dict(desktop.context(), targets=snapshot.get('targets'))
             unchanged_action = False
+            self.undo_refused = None
             try:
                 self.next_queue = []
                 raw = self.expand_tool(raw, marks, snapshot)
@@ -1979,12 +2387,16 @@ class ComputerTask(CompletionChecks, AnswerWriting, Fallbacks):
                                      text_regions=regions, catalog=self._catalog or (), goal=self.goal)
                 step = self.file_interaction(step, marks, provider, cancel_kwargs, snapshot)
                 check_active()
+                if not numbered:  # a numbered target is on screen by definition
+                    step = self.scroll_for_unseen(step, desktop, snapshot, regions, visual)
                 step = self.app_click(step, desktop, snapshot, visual)
                 step = self.address_typed(step, desktop, snapshot)
                 if step['status'] == 'action' and step['action']['type'] == 'type_text' and self.goal_mode != 'inspect' and already_typed(step['action'].get('text', ''), getattr(self, 'typed', [])):
                     # The shopping list was typed, then typed again five times (live, v2): the model doesn't see it worked.
                     raise ValidationError('That text is already typed in this task. If the goal is done, report status=done; '
                                           'otherwise type only what is still missing.')
+                if step['status'] == 'action':
+                    self.repeat_check(step['action'])
                 if step['status'] == 'action' and self.cycled(step['action']):
                     # Calculator: Show Sidebar, Hide Sidebar, Show Sidebar… (owner, live held-out). Whatever the
                     # buttons are called: the same click on a screen this task already left by that click.
@@ -2012,6 +2424,16 @@ class ComputerTask(CompletionChecks, AnswerWriting, Fallbacks):
                        focused=str(snapshot.get('focused_role', ''))[:30], companion_focused=bool(snapshot.get('companion_focused')))
                 if attempt:
                     answer = self.report_only(provider, messages, model_image or image_data, cancel_kwargs, check_active, snapshot, regions)
+                    if answer is None and getattr(self, 'undo_refused', None):
+                        # Twice the model wanted to click the box it had just switched. Nothing is wrong on
+                        # screen: the completion check says whether the goal is reached, and the task ends
+                        # as done or as "could not confirm", not in an error (review).
+                        missing = self.still_missing(provider, snapshot, regions, cancel_kwargs)
+                        check_active()
+                        step = ({'status': 'done', 'action': None, 'message': 'I switched “'+self.undo_refused+'”.'} if not missing else
+                                {'status': 'needs_user', 'action': None, 'message': 'I switched “'+self.undo_refused+'”, but could not confirm the rest: '+missing[:160]+'.'})
+                        raw = dict(step, risk='navigation')
+                        break
                     if answer is None and unchanged_action:
                         step = {'status': 'needs_user', 'action': None, 'message':
                                 'The same action was proposed on an unchanged screen. I stopped rather than repeat an uncertain action.'}
@@ -2050,26 +2472,24 @@ class ComputerTask(CompletionChecks, AnswerWriting, Fallbacks):
                     'relevant view), return status=action with the next step. Only report done with concrete current evidence.')
                 timing('task.reconsider.start', inference_at, step=len(self.receipts)+1, reason='opening_only_done')
                 continue
-            if step['status'] == 'done' and self.worked() and regions:
+            if step['status'] == 'done':
                 # The model's own "done" is checked against current evidence: "Sorted by kind" without the list
                 # view, a selected folder instead of an open one, or a read/navigation goal still on the
                 # wrong page. A question in a compound goal does not waive its other requirements.
+                # This holds whatever ran before and whatever was read: a done after nothing but opening,
+                # or with no screen text at all, used to pass on the model's word. The window title
+                # and native facts can still be quoted then; with nothing observable it is not done.
                 missing = self.still_missing(provider, snapshot, regions, cancel_kwargs)
                 check_active()
                 if missing and not attempt:
-                    correction = ('Not done yet: the screen does not show '+missing+'. Take the next step toward it (the app\'s '
-                                  'menus and keyboard shortcuts do most things), or report needs_user if it cannot be done.')
+                    correction = ('Not done yet: the screen does not show '+missing+'. Take the next step toward it: open the link, '
+                                  'page, tab or folder where it would be, scroll to it, or use the app\'s menus and keyboard shortcuts; '
+                                  'or report needs_user if it cannot be done.')
                     timing('task.reconsider.start', inference_at, step=len(self.receipts)+1, reason='missing')
                     continue
                 if missing:
                     step = {'status': 'needs_user', 'action': None, 'message': 'I could not finish: '+missing[:200]+' is not on the screen.'}
             break
-        stages['total_ms'] = round((time.monotonic()-step_started)*1000)
-        self.timings.append(stages)
-        timing('task.step.summary', step_started, step=len(self.receipts)+1, status=step['status'],
-               **{key: value for key, value in stages.items() if key != 'model'},
-               model_calls=len(stages['model']), model_ms=[call['ms'] for call in stages['model']],
-               model_modes=[call['mode'] for call in stages['model']])
         if step['status'] == 'done' and self.goal_mode == 'inspect' and regions:
             check_active()
             answer = self.screen_answer(provider, snapshot, regions, step['message'], cancel_kwargs)
@@ -2088,7 +2508,7 @@ class ComputerTask(CompletionChecks, AnswerWriting, Fallbacks):
         from .eval_control import step_shot
         step_shot(image_data, len(self.receipts)+1, step.get('action'), step['status'], observation=snapshot, screen=visual.get('screen'))
         if step['status'] != 'action':
-            return {'status': step['status'], 'message': step['message'], 'action': None}
+            return finish({'status': step['status'], 'message': step['message'], 'action': None}, 'model_terminal')
         action, message = step['action'], step['message']
         import hashlib
         signature = (hashlib.sha256(image_data.encode()).hexdigest(), self.scroll_seen,
@@ -2096,6 +2516,11 @@ class ComputerTask(CompletionChecks, AnswerWriting, Fallbacks):
         self.last_proposal = signature
         if action['type'] in ('click_point', 'drag'):
             action['capture_guard'] = vision.click_guard(image_data, visual, action)
+        target = state_control(action, marks, snapshot, visual.get('screen'))
+        if target:
+            # How the checkbox, switch or tab looks now; check_last_click compares after the click.
+            look = region_look(image_data, target['rect'])
+            self.pending_look = {'rect': target['rect'], 'look': look} if look else None
         if action['type'] == 'drag':
             # Selecting text inside the focused field or document is only selecting; any other drag can move things.
             box, screen = snapshot.get('focused_bounds') or {}, visual.get('screen') or {}
@@ -2107,4 +2532,8 @@ class ComputerTask(CompletionChecks, AnswerWriting, Fallbacks):
         # Enter in a search field during a read-only goal is a search, not a submission: it ran
         # nowhere before (Wikipedia, live) because every Enter waited for a confirmation.
         review = not self.automatic or self.review_needed(action, step.get('risk', raw['risk']), snapshot, navigation_verified=step.get('settings_navigation',False))
-        return {'status': 'action', 'message': message, 'action': action, 'review': review, 'visual_capture': visual}
+        if not review:
+            # Only a press that would otherwise run unconfirmed is asked about, and only a button's.
+            review = self.commits(action, self.press_kind(action, marks, snapshot, desktop, visual), snapshot, provider, cancel_kwargs)
+            check_active()
+        return finish({'status': 'action', 'message': message, 'action': action, 'review': review, 'visual_capture': visual}, 'model_action')

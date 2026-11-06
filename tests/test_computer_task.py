@@ -88,6 +88,17 @@ class TaskTests(unittest.TestCase):
         self.provider.complete_structured.return_value = {'status': status, 'message': 'Current screen evidence.', 'risk': risk, 'action': action}
         return self.task.propose(self.desktop, self.vision, self.provider, {'x': 0, 'y': 0})
 
+    def finished_screen(self, *lines):
+        """Fixture only: the screen text a finished task shows, and a completion check that quotes
+        its first line. Step replies still come from respond() (DEFAULT keeps return_value)."""
+        from unittest.mock import DEFAULT
+        from companion.task_completion import MET_SYSTEM
+        capture = self.vision.capture.side_effect
+        self.vision.capture.side_effect = lambda *args, **kwargs: dict(capture(*args, **kwargs), text_regions=[
+            {'text': line, 'x': .2, 'y': .3+.1*i, 'width': .4, 'height': .05} for i, line in enumerate(lines)])
+        self.provider.complete_structured.side_effect = lambda system, *args, **kwargs: (
+            {'met': True, 'missing': '', 'evidence': lines[0]} if system == MET_SYSTEM else DEFAULT)
+
     def test_each_step_uses_a_new_capture_and_preserves_goal_and_receipts(self):
         first = self.respond({'type': 'click_point', 'x': .2, 'y': .4, 'label': 'Help'})
         self.assertFalse(first['review'])
@@ -104,7 +115,12 @@ class TaskTests(unittest.TestCase):
 
     def test_progress_changes_after_capture_and_before_model_inference(self):
         events = []
-        self.provider.complete_structured.side_effect = lambda *args, **kwargs: (
+        # Fixture: a done is now checked against the screen, so the screen shows the tasks and that
+        # check (its own call, not a step decision) is answered without being logged as 'model'.
+        self.finished_screen('Tasks: 3 open')
+        check = self.provider.complete_structured.side_effect
+        from companion.task_completion import MET_SYSTEM
+        self.provider.complete_structured.side_effect = lambda system, *args, **kwargs: check(system) if system == MET_SYSTEM else (
             events.append('model') or {'status': 'done', 'message': 'Found tasks.', 'risk': 'navigation', 'action': None})
         self.task.propose(self.desktop, self.vision, self.provider, {'x': 0, 'y': 0},
                           progress=lambda message: events.append(message))
@@ -163,10 +179,18 @@ class TaskTests(unittest.TestCase):
         third = self.respond({'type': 'click_point', 'x': .7, 'y': .6, 'label': 'Document area'})
         self.assertEqual(third['action']['x'], .7)
         self.task.record({'type': 'click_point', 'status': 'submitted'})
+        # Fixture: a done is now checked against the screen, so the screen shows the sentence that was typed.
+        self.finished_screen('A prince travels between planets and learns about friendship.')
         self.assertEqual(self.respond(status='done')['status'], 'done')
         self.assertEqual(self.vision.capture.call_count, 4)
 
     def test_task_can_press_a_current_accessible_control_without_coordinate_guessing(self):
+        # Fixture: a button press that would run unconfirmed is asked about once (ComputerTask.commits);
+        # this scripted answer says the button only navigates. A reply that is no answer waits for the user.
+        from unittest.mock import DEFAULT
+        from companion.task_prompts import COMMIT_SYSTEM
+        self.provider.complete_structured.side_effect = lambda system, *args, **kwargs: (
+            {'effect': 'navigate'} if system == COMMIT_SYSTEM else DEFAULT)
         first = self.respond({'type': 'press_control', 'control_id': 'control-0'})
         self.assertEqual(first['action']['type'], 'press_control')
         self.assertEqual(first['action']['label'], 'New Folder')
@@ -205,6 +229,8 @@ class TaskTests(unittest.TestCase):
         self.assertTrue(self.respond({'type': 'scroll', 'direction': 'down'})['review'])
 
     def test_done_requires_an_observation_and_cannot_smuggle_an_action(self):
+        # Fixture: a done is now checked against the screen, so the screen shows the help page that was asked for.
+        self.finished_screen('Help: getting started')
         self.assertEqual(self.respond(status='done')['status'], 'done')
         self.vision.capture.assert_called_once()
         with self.assertRaises(ValidationError):
