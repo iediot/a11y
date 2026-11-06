@@ -1,77 +1,77 @@
-# Desktop architecture
+# Runtime architecture
 
-A11y is a Python/PyQt6 desktop accessibility companion for macOS and Windows.
-`a11y_desktop.py` starts `CompanionWindow`; both native macOS windows and the
-frameless Windows/offscreen interface share `Companion` orchestration.
+A11y is one Python/PyQt6 desktop application, with native macOS helpers and Windows
+adapters. Ollama is the inference default; explicitly selected Claude is optional.
+[AGENTS.md](../AGENTS.md) is policy; [the test contract](ai/TESTING.md) defines evidence.
 
-## Request boundary
+## Request and execution boundaries
 
-`Companion.prepare_request` resolves arithmetic, clock, direct mail reads, mascot
-movement, exact app commands and quick opening in code before consulting the intent
-router. `request_plan.INTENT_SCHEMA` limits model decisions to supported operations.
-The router receives reviewed `user_profile`, explicit explanation/pacing settings,
-current time and front app. Previous requests are included only for references back.
+```text
+typed / spoken request
+  -> CompanionWindow + worker              desktop.py, voice.py
+  -> Companion.prepare_request / ask        service.py
+       exact supported operation in code   arithmetic.py, quick_open.py, mac_apps.py
+       or constrained interpretation       request_plan.py, ollama.py / claude.py
+  -> response / action validation          models.py, request_plan.py
+  -> confirmation when required            desktop.py, computer_task.py
+  -> one action or bounded ComputerTask    computer_use.py, computer_task.py
+  -> platform validation and execution     desktop_context.py, vision.py, native / windows_*
+  -> fresh observation / completion check  task_completion.py, task_answers.py
+```
 
-`Companion.ask(request, mode='answer'|'assist'|'verify', image_data=None)` returns
-`message`, `desktop_action`, `target` and `effective` preferences. Built-in mail reads
-also set `full_text` and `read_aloud`. Only code may set trusted execution flags.
-`models.validate_response` enforces the response shape, finite coordinate bounds,
-current desktop observations, and allowlisted actions. Model proposals never execute
-arbitrary shell commands. `request_plan.enforce_operation` prevents a grounding
-response from changing the chosen operation.
+`a11y_desktop.py` configures resources, locking, Qt and opt-in source evaluation.
+`desktop.py` coordinates UI/workers, voice, access, confirmations and task progression.
+`mascot.py`, `mac_window.py`, faces and theme modules draw the terminal-style companion
+and native macOS windows. Windows/offscreen rendering uses the shared Qt path.
 
-## Computer tasks
+`service.py` combines routing, short-term conversation, deterministic operations and
+response assembly. Code alone sets trusted computed/full-text/app-write flags.
+`request_plan.py` limits intent to supported operations and prevents grounding from
+changing that intent. `models.py` validates response shapes and proposed actions.
 
-Executable goals use `ComputerTask`, `Planner.plan_task`, `start_task` and the
-Computer task / Stop computer task menu controls. The bounded loop observes, takes
-an exact deterministic step when possible, otherwise asks the model with one image,
-OCR and accessibility targets, validates, executes and observes again. Invalid
-proposals get a bounded repair attempt. Stop cancels inference and blocks late actions.
+`ComputerTask` observes, takes exact native steps when possible, otherwise requests
+a constrained step, validates, executes and observes again. Steps are bounded and
+cancellable. Completion, answers and menu/Settings fallbacks live in the `task_*`
+modules. `ComputerUse` executes one approved proposal and produces an observation
+receipt. Submitted input does not prove the user's goal happened.
 
-Native control IDs and numbered OCR/accessibility targets bind actions to observed
-controls. Pixel clicks retain display geometry, age, window and region hash guards.
-Typing binds to the foreground non-password field; protected apps stay blocked.
-Navigation runs directly; sensitive changes retain user confirmation. Submission is
-not proof of success: fresh observations verify results. CompanionPointer and the
-guidance overlay show reviewed targets without activating them.
+## Native and model adapters
 
-## Privacy and state
+`DesktopContext` tracks access generations, observation age and authorization against
+current context. macOS uses `MacDesktopBridge`, Swift Accessibility/input/EventKit
+and argv-based AppleScript readers. `ScreenVision` captures/transforms transient
+frames and validates pixel targets; `ScreenBridge.swift` uses ScreenCaptureKit/Vision.
+Windows supplies Win32/UI Automation, capture/OCR and SendInput adapters.
 
-`access.py` stores explicit consent and pause/restoration choices. App awareness,
-screen vision, microphone and Claude screen sharing have separate controls.
-Screenshots are transient and never written to disk. Screen/app-derived exchanges
-stay out of persistent history; mail text is shown whole but memory retains only its
-first line. Pausing access clears private in-memory context. Cloud conversation
-filters private turns.
+`provider.py` defines config/errors. `ollama.py` holds local transport, provider
+selection and the shared `Planner`; `claude.py` imports that planner. `gui_models.py`
+adapts experimental protocols. Weather/factual lookups have separate outbound HTTP
+paths: local inference does not make the whole app offline. Provider choice does
+not bypass consent or action validation.
 
-`storage.py` keeps history, access preferences, explicit settings and reviewed setup
-profiles in `employee.sqlite3`. Identity retains its original company/user key pair
-solely to preserve storage ownership. Existing files and retired SQLite tables are
-left intact. Legacy history rows tagged with document dependencies remain hidden;
-the app never replays them or opens the retired document database. New history rows
-carry no document dependencies.
+## State and privacy
 
-`preferences.py` applies defaults plus explicit user choices for explanation detail,
-pacing, keyboard navigation and reduced motion. Existing learned profile fields are
-preserved as data but never applied. `onboarding.py` and `SetupDialog` preserve draft
-versus reviewed personal details; drafts never enter model context.
+`storage.py` persists reviewed profiles, explicit settings, consent and eligible
+history in SQLite. `paths.py` separates bundled/source resources and data.
+`instance.py` prevents concurrent app instances sharing stores. `access.py` separates
+app awareness, screen, voice and optional cloud consent. Unreviewed onboarding drafts
+stay out of context; preferences apply explicit choices.
 
-## Models and platform adapters
+Conversation is bounded and in process. Screen/app content is private; pausing access
+removes private context and cloud conversation filters it. Full mail text is shown,
+but memory keeps only its first line. Ordinary screenshots are transient. Optional
+source-eval evidence has additional fixture/privacy constraints.
 
-Ollama is the local default; ambient remote-provider credentials never select cloud
-inference. Claude is opt-in, uses the Anthropic SDK and requires its disclosure and
-separate screen consent. `provider.py` retains shared AIConfig, ProviderError and
-NoRedirect; transports live in `ollama.py` and `claude.py`.
+## Coupling and test boundaries
 
-macOS uses `desktop_context.py`, Swift Accessibility/EventKit and ScreenCaptureKit,
-plus argv-based AppleScript app readers. Windows uses Win32/UI Automation, GDI,
-Windows OCR and validated SendInput. Windows hardware behavior still needs real
-validation; automated doubles do not establish desktop success.
+`desktop.py`, `service.py` and `computer_task.py` remain large coordinators. Task mixins
+share task state and sometimes import helpers back from `computer_task.py` at call
+time. Plans, observations and receipts mostly use runtime-validated dictionaries.
+These constraints call for focused fixes backed by reproduced user failures.
 
-## Validation
-
-Run `QT_QPA_PLATFORM=offscreen .venv/bin/python -m unittest discover -s tests -q`.
-`scripts/ci_tests.py` reports failures and crashes in CI. The `live_*` suites measure
-real app outcomes and latency on the host; synthetic `evaluate_*` scripts and
-`benchmark_pipeline.py` remain diagnostic tools. See `CLAUDE.md` and
-`docs/ai/CLAUDE_HANDOFF.md` for commands, platform gaps and measured history.
+`eval_control.py` is source-only opt-in instrumentation. It submits UI-path requests
+and diagnostic state; restricted fixture confirmation is not a general executor.
+A harness independently establishes outcomes. Legacy `live_*` scripts have uneven
+safety/oracle behavior and remain diagnostic until audited. Doubles do not prove live
+task success or Windows hardware compatibility. Current claims belong in
+[RESULTS](ai/RESULTS.md).

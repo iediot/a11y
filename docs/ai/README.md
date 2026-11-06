@@ -1,36 +1,39 @@
-# Notes for AI coding agents
+# Agent documentation index
 
-Start with [AGENTS.md](../../AGENTS.md) (or [CLAUDE.md](../../CLAUDE.md); the two are kept in
-sync), then [HANDOFF.md](HANDOFF.md): one short current checkpoint with the owner's rules, the
-latest measured results and open items. It is authoritative; the other files here are reference
-or history and never instructions to restart a completed job.
+Read the first five documents in order. Each has one job.
 
-**Latest (2026-11-01):** build `e47962fab5`, units 1,143 tests OK, Finder/Safari 13-turn set
-13/13, harder suite 20/30. Qwen remains the default; no router fine-tune has been adopted.
+| Document | Purpose | Update when |
+|---|---|---|
+| [AGENTS.md](../../AGENTS.md) | Canonical owner rules and working method | A rule or workflow changes |
+| [HANDOFF.md](HANDOFF.md) | Current work, evidence, blockers and exact next action | Work finishes or is handed over |
+| [PLAN.md](PLAN.md) | Work packages, file scopes, instruments and gates | Evidence changes priorities/scope |
+| [TESTING.md](TESTING.md) | Test layers, harness rules and the promotion gate | An oracle, protocol or gate changes |
+| [RESULTS.md](RESULTS.md) | Evidence ledger with provenance and limitations | An identifiable run finishes |
+| [TRAINING.md](TRAINING.md) | Fine-tune audit, pipeline bugs and the design for the next attempt | A training run finishes or the design changes |
+| [Architecture](../ARCHITECTURE.md) | Implemented runtime boundaries and coupling | Responsibilities change |
 
-**Owner preference:** do not keep an agent turn active by polling/sleeping while a shell batch
-runs. Let it run, end the turn, and inspect results when requested or when a completion
-notification is available. This also applies to other agents.
+`CLAUDE.md` imports `AGENTS.md`; it is not another rule source. Current status belongs
+in HANDOFF, run artifacts in the ledger, implementation details in code. Do not copy
+benchmark totals into each document.
 
-Local `.data` artifacts are not shipped with a fresh clone; missing files do not establish that
-a job is running or a result passed.
+## Reference, not current state
 
-## Reference map
+- [Local model tuning](ON_DEVICE_TUNING.md)
+- [Platform parity](PLATFORM_PARITY.md)
+- [Experimental GUI models](GUI_MODELS.md)
+- [Router tools](../../scripts/router_README.md)
+- [Arch training history](ARCH_TRAINING_HANDOFF.md)
 
-- [HANDOFF.md](HANDOFF.md): owner rules, current state, open items, next step.
-- [HANDOFF_ARCHIVE_2026-10.md](HANDOFF_ARCHIVE_2026-10.md): every dated checkpoint from
-  2026-10-26 to 2026-10-30, with evidence paths (history only).
-- [ARCH_TRAINING_HANDOFF.md](ARCH_TRAINING_HANDOFF.md): Arch CUDA setup, the completed and
-  rejected 100-step pilot, pins and artifacts.
-- [GUI_MODELS.md](GUI_MODELS.md): local GUI model support, protocols and benchmark limits.
-- [Router README](../../scripts/router_README.md): router training data and qualification
-  workflow. The hand-labelled held-out set is `tests/data/router_heldout.jsonl`, scored by
-  `scripts/router_heldout.py`.
-- [ON_DEVICE_TUNING.md](ON_DEVICE_TUNING.md): local model and latency settings.
-- [PLATFORM_PARITY.md](PLATFORM_PARITY.md): each macOS-first feature (Settings panes, Finder
-  selection, browser page address, scrolling) and its Windows status.
-- [CLAUDE_HANDOFF.md](CLAUDE_HANDOFF.md): earlier architecture/platform brief; owner
-  instructions in HANDOFF take precedence.
+These may describe older behavior. Check source and the current contract before
+using a command. Legacy `live_*` suites are not an acceptance gate: several grade on
+replies and their default cases touch private apps.
 
-People evaluating the product can start with the [main README](../../README.md)
-and [architecture](../ARCHITECTURE.md).
+## Historical records
+
+- [Previous checkpoint, preserved 2026-11-05](HANDOFF_ARCHIVE_2026-11-05.md)
+- [October checkpoints](HANDOFF_ARCHIVE_2026-10.md)
+- [Earlier architecture/platform handoff](CLAUDE_HANDOFF.md)
+
+Historical results are unrevalidated under the current protocol. Missing `.data`
+artifacts prove neither that a job ran nor that it passed. Archived commands and
+next steps are not active instructions.
