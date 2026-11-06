@@ -62,7 +62,7 @@ ENDPOINT = 'http://127.0.0.1:11434'
 HARNESS_FILES = ('request_eval.py', 'request_eval_core.py', 'request_cases_dev.py', 'request_cases_acceptance.py')
 RUNTIME_MODULES = ('timing', 'models', 'provider', 'ollama', 'storage', 'preferences', 'onboarding', 'paths', 'routes',
                    'app_names', 'web_apps', 'quick_open', 'arithmetic', 'request_plan', 'input_actions', 'media',
-                   'desktop_context', 'computer_use', 'mac_apps', 'mail_reader', 'web_lookup', 'weather', 'service')
+                   'desktop_context', 'computer_use', 'mac_apps', 'mail_reader', 'web_lookup', 'weather', 'system_controls', 'service')
 # Never inherited by the evaluated code: evaluation switches, cloud credentials and model/endpoint overrides.
 CLOUD_ENVIRONMENT = ('A11Y_EVAL', 'A11Y_EVAL_SHOTS', 'ANTHROPIC_API_KEY', 'A11Y_AI_MODEL', 'A11Y_VISION_MODEL', 'A11Y_OLLAMA_URL')
 GEOMETRY = {'x': 0, 'y': 0, 'width': 1512, 'height': 982, 'usable': {'x': 0, 'y': 38, 'width': 1512, 'height': 944}}
@@ -92,6 +92,7 @@ DEFAULT_WORLD = {
     'events': [], 'reminders': [], 'notes': [], 'mail': [], 'unread': 0, 'contacts': [], 'files': {},
     'battery': {'level': 71, 'state': 'discharging'}, 'disk': {'free_gb': 212, 'total_gb': 494},
     'macos': '15.3.1', 'build': '24D70', 'wifi': 'Fernhill-5G', 'memory_gb': 16, 'dark': False, 'chip': 'Apple M2',
+    'volume': {'level': 50, 'muted': False}, 'wifi_on': True, 'bluetooth_on': True,
     'music': {'state': 'paused', 'track': {'name': 'Slow Tide', 'artist': 'Mira Vale'}, 'library': []},
     'home_place': 'Lisbon', 'weather': {}, 'wiki': [], 'shortcuts': ['Morning Routine', 'Tidy Desktop'],
 }
@@ -218,6 +219,19 @@ class FakeWorld:
         if program == 'networksetup' and rest == ['-getairportnetwork', 'en0']:
             self.record('system_read', what='wifi')
             return done('Current Wi-Fi Network: %s\n' % self.spec['wifi'])
+        # System settings (companion/system_controls.py): read and set on the world's state, recorded.
+        if program == 'networksetup' and rest == ['-listallhardwareports']:
+            return done('Hardware Port: Ethernet\nDevice: en1\n\nHardware Port: Wi-Fi\nDevice: en0\nEthernet Address: 00:00:00:00:00:00\n')
+        if program == 'networksetup' and rest == ['-getairportpower', 'en0']:
+            self.record('system_read', what='wifi_power')
+            return done('Wi-Fi Power (en0): %s\n' % ('On' if self.spec['wifi_on'] else 'Off'))
+        if program == 'networksetup' and rest[:2] == ['-setairportpower', 'en0'] and len(rest) == 3 and rest[2] in ('on', 'off'):
+            self.record('system_set', setting='wifi', value=rest[2])
+            self.spec['wifi_on'] = rest[2] == 'on'
+            return done()
+        if program == 'system_profiler' and rest == ['SPBluetoothDataType']:
+            self.record('system_read', what='bluetooth')
+            return done('Bluetooth:\n\n      Bluetooth Controller:\n          State: %s\n' % ('On' if self.spec['bluetooth_on'] else 'Off'))
         if program == 'shortcuts' and rest == ['list']:
             self.record('shortcuts_list')
             return done('\n'.join(self.spec['shortcuts'])+'\n')
@@ -227,7 +241,23 @@ class FakeWorld:
         self.tripwire.trip('subprocess', 'unknown command '+' '.join(argv[:3])[:200])
 
     def script(self, source, arguments):
-        apps, mail = self.m.mac_apps, self.m.mail_reader
+        apps, mail, controls = self.m.mac_apps, self.m.mail_reader, self.m.system_controls
+        volume = self.spec['volume']
+        if source == controls.VOLUME_GET:
+            self.record('system_read', what='volume')
+            return '%d,%s' % (volume['level'], 'true' if volume['muted'] else 'false')
+        if source == controls.VOLUME_SET and len(arguments) == 1 and arguments[0].isdigit():
+            self.record('system_set', setting='volume', value=int(arguments[0]))
+            volume['level'] = max(0, min(100, int(arguments[0])))
+            return ''
+        if source == controls.MUTE_SET and len(arguments) == 1:
+            self.record('system_set', setting='mute', value=arguments[0] == 'true')
+            volume['muted'] = arguments[0] == 'true'
+            return ''
+        if source == controls.APPEARANCE_SET and len(arguments) == 1:
+            self.record('system_set', setting='appearance', value='dark' if arguments[0] == 'true' else 'light')
+            self.spec['dark'] = arguments[0] == 'true'
+            return ''
         sep, end = apps.SEP, apps.END
         if source == apps.NOTES_LIST:
             self.record('notes_list')

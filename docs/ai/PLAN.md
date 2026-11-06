@@ -62,6 +62,34 @@ Order: P0, P1 and P2 in parallel (disjoint files) → P3 → P4 → P5 → P6 (P
 runtime files, so strictly sequential) → P7 when unblocked. P8 any time nothing else
 holds its files.
 
+P0–P6 and P8 are done (see RESULTS). P7 waits on the owner.
+
+## Phase 2: Siri first, computer use as fallback, model as last resort
+
+Owner direction (2026-11-06): A11y is a Siri-style assistant with computer use. The model
+understands wording and plans in terms of intents; code does the seeing, acting and
+checking. A vision model is used only when nothing structured exists, and then it must
+be a good one. Layers, cheapest first:
+
+1. Exact code (arithmetic, time, opening apps) — exists.
+2. Classic intents on real APIs (reminders, calendar, notes, files, Shortcuts, browser) —
+   exists; add direct system controls.
+3. Accessibility tree and menu bar: find controls and menu commands by name and role, act
+   with accessibility actions, verify from native state.
+4. Classic image recognition: Vision OCR text positions, pixel change detection, simple
+   element detection, for apps with poor accessibility data.
+5. Model as chooser over options layers 3–4 enumerated; free vision only when the list is
+   empty.
+
+| ID | Goal | Edit scope | Gate |
+|---|---|---|---|
+| Q1 | Direct system controls: volume, mute, brightness, dark mode, Wi-Fi, Bluetooth, Do Not Disturb, text size, as a typed operation executed by code (AppleScript/system calls on macOS, honest refusal or Windows adapter elsewhere); reads report current state; changes that are not reversible-by-the-user still confirm | new `companion/system_controls.py`, `companion/service.py` routing, `companion/request_plan.py` prompt/semantic_plan, tests | Request eval `system` family dev and acceptance improve; no screen task for these; zero unauthorized actions |
+| Q2 | Code-first task loop: each step enumerates candidate actions (accessibility controls with name/role/state, menu commands, OCR text targets), acts by name through existing bridge calls (`--press`, `--menu`, `--targets`), and asks the model only to choose a candidate id or say "none"; free-form vision step only when the list is empty or every candidate was tried | `companion/computer_task.py`, `companion/task_*.py`, tests | Sim acceptance pass count up from 14/25 with false successes ≤ 3 and zero unauthorized; dev not worse; model calls per step not higher |
+| Q3 | Last-resort brain: benchmark a stronger planner (colibri MoE, e.g. Qwen3.6-35B-A3B) for the cases Q2 still hands to the model | scratch only until accepted | Owner approves download; ≥ 20 tok/s on this Mac with the 4B vision model loaded; sim acceptance gain |
+
+Order: Q1 and Q2 in parallel (disjoint files), each with an independent Opus review;
+then Q3 sized by how often Q2 still needs free vision.
+
 ## Later candidates (not started, need an oracle first)
 
 - Streaming the first words of a reply so feedback starts before generation ends.

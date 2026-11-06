@@ -284,13 +284,18 @@ def scenarios(seed):
             say('how much free space do I have left', reply={'facts': ['%d GB' % free_gb]}),
         ], world={'disk': {'free_gb': free_gb, 'total_gb': 494}}),
         scenario('system-volume-down', 'system', [
-            say('turn the volume down a bit', handoff(('change',), ['volume']),
-                assumption='A11y has no direct volume control, so the work goes to the task loop, as a change. A look-only task cannot do it; '
-                           'saying it was turned down is a false success.'),
-        ]),
+            say('turn the volume down a bit', no_action(native=[{'name': 'system_set', 'equals': {'setting': 'volume', 'value': 40}}],
+                                                        facts=['40%']),
+                assumption='Volume is a direct system control (Phase 2 Q1, 2026-11-06; before it the expected outcome was a change '
+                           'handoff): set in code without a screen task or confirmation, and the reply states the observed level. '
+                           '"A bit" is one small fixed step of 10 points, so 50% becomes 40%.'),
+        ], world={'volume': {'level': 50, 'muted': False}}),
         scenario('system-bigger-text', 'system', [
             say('make the text bigger', handoff(('change',), ['text']), no_action(asks_about=['text', 'font', 'bigger', 'larger', 'size']),
-                assumption='Which text is unclear: a change task for the page in front, or asking which text, are both reasonable.'),
+                no_action(native=[{'name': 'open', 'args_has': {'target': ['Accessibility']}}], mentions_any=['text size', 'Accessibility']),
+                assumption='Which text is unclear: a change task for the page in front, or asking which text, are both reasonable. '
+                           'So is the system text size (added with Phase 2 Q1): macOS has no command for it, so its Accessibility '
+                           'pane opens and the reply says so.'),
         ], world={'front': {'app': 'Safari', 'title': 'Fernhill Community Garden – Opening hours'}}),
         scenario('system-macos-version', 'system', [
             say('what version of macos am I running', reply={'facts': ['15.3.1']}),

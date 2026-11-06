@@ -1152,6 +1152,12 @@ class Companion:
             if interpreted.get('operation') == 'system_info' and re.search(r'\bsettings?\b|\bpreferences\b', request, re.I):
                 # "Show me Battery in System Settings" answered the battery level: it asks for the pane.
                 interpreted = dict(interpreted, operation='computer_task', app_name='', target=request, remaining_request='')
+            if interpreted.get('operation') == 'system_control':
+                owner = str(interpreted.get('app_name', '')).strip() or self.named_installed_app(request, writes=True) or ''
+                if owner.casefold() not in ('', 'system settings', 'system preferences', 'control center', 'a11y'):
+                    # "Mute the conversation in Slack" is about that app, never the Mac's own sound.
+                    interpreted = dict(interpreted, operation='computer_task', app_name='', target=request, remaining_request='',
+                                       goal_mode='change')
             if interpreted.get('operation') == 'create_note' and not re.search(r'\bnotes?\b', request, re.I):
                 # "Type '…' into a new text document" became a note in Notes (live).
                 interpreted = dict(interpreted, operation='computer_task', app_name='', target=request, remaining_request='')
@@ -1279,6 +1285,13 @@ class Companion:
                     and plan.get('referent') != 'companion'
                     and type(plan.get('confidence')) in (int, float) and plan['confidence'] < self.UNSURE
                     and str(plan.get('reply', '')).strip() and web_lookup.plain_question(request) and web_lookup.enabled())
+
+    def system_control(self, request, plan):
+        """Read or change one system setting (system_controls): (reply as observed, setting or None)."""
+        from . import system_controls
+        native = getattr(getattr(self.desktop_context, 'bridge', None), 'call', None)  # the desktop helper, for brightness
+        result = system_controls.control(str(plan.get('target', '')), request, native=native)
+        return result['message'], result['setting']
 
     def background_answer(self, request, plan):
         """Weather, and facts that change or the model wasn't sure of, answered without
@@ -1471,7 +1484,21 @@ class Companion:
         # Keep the actual instruction in natural language at the end, after bulky evidence.
         messages.append({'role': 'user', 'content': request})
         prebuilt = None
-        if request_plan and not image_data and mode in ('answer', 'assist'):
+        if request_plan and request_plan['operation'] == 'system_control' and mode in ('answer', 'assist'):
+            # Volume, dark mode, Wi-Fi…: set in code and reported as observed, no screen task. These are
+            # reversible by the user and send, delete or buy nothing, so they run at once, like navigation.
+            from .system_controls import leftover
+            message, setting = self.system_control(request, request_plan)
+            prebuilt = {'request_kind': 'answer', 'target': None, 'desktop_action': None, 'message': message}
+            rest = str(request_plan.get('remaining_request', '')).strip()
+            then = leftover(rest, setting) if setting else 'task' if rest else 'same'
+            if isinstance(then, tuple):
+                # "Mute and turn on dark mode": the second setting runs in code too.
+                prebuilt['message'] += ' '+self.system_control(rest, dict(request_plan, target=then[1]))[0]
+            elif then == 'task':
+                prebuilt['desktop_action'] = {'type': 'start_task', 'goal': rest}
+            request_plan = dict(request_plan, remaining_request='')
+        if prebuilt is None and request_plan and not image_data and mode in ('answer', 'assist'):
             message = self.background_answer(request, request_plan)
             if message:
                 # Answered in the background instead of opening a browser window.

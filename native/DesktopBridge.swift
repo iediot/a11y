@@ -95,6 +95,55 @@ func mediaFields(_ result: NSAppleEventDescriptor, offset: Int = 0) -> [String: 
     return ["player_state": result.atIndex(offset+1)?.stringValue ?? "unknown",
             "track": ["name": result.atIndex(offset+2)?.stringValue ?? "", "artist": result.atIndex(offset+3)?.stringValue ?? "", "id": result.atIndex(offset+4)?.stringValue ?? ""]]
 }
+// Built-in display brightness (system_controls.py). DisplayServices is private, so it is loaded at
+// run time: a missing framework or symbol is an error reply, never a crash. --brightness-key is the
+// fallback for displays it cannot drive: the brightness keys, which give no reading back.
+typealias BrightnessGetter = @convention(c) (UInt32, UnsafeMutablePointer<Float>) -> Int32
+typealias BrightnessSetter = @convention(c) (UInt32, Float) -> Int32
+func displayServicesSymbol(_ name: String) -> UnsafeMutableRawPointer? {
+    guard let handle = dlopen("/System/Library/PrivateFrameworks/DisplayServices.framework/DisplayServices", RTLD_LAZY) else { return nil }
+    return dlsym(handle, name)
+}
+func displayBrightness() -> Float? {
+    guard let symbol = displayServicesSymbol("DisplayServicesGetBrightness") else { return nil }
+    var level: Float = -1
+    let status = unsafeBitCast(symbol, to: BrightnessGetter.self)(CGMainDisplayID(), &level)
+    return status == 0 && level >= 0 && level <= 1 ? level : nil
+}
+if args.contains("--brightness") {
+    guard let level = displayBrightness() else { emit(["error": "This display's brightness cannot be read."]); exit(1) }
+    emit(["brightness": level]); exit(0)
+}
+if let index = args.firstIndex(of: "--set-brightness"), index+1 < args.count {
+    guard let wanted = Float(args[index+1]), wanted >= 0, wanted <= 1 else { emit(["error": "Brightness must be between 0 and 1."]); exit(1) }
+    guard displayBrightness() != nil, let symbol = displayServicesSymbol("DisplayServicesSetBrightness"),
+          unsafeBitCast(symbol, to: BrightnessSetter.self)(CGMainDisplayID(), wanted) == 0 else {
+        emit(["error": "This display's brightness cannot be set."]); exit(1)
+    }
+    usleep(200_000)
+    guard let level = displayBrightness() else { emit(["error": "This display's brightness cannot be read."]); exit(1) }
+    emit(["brightness": level]); exit(0)
+}
+if let index = args.firstIndex(of: "--brightness-key"), index+2 < args.count {
+    let up = args[index+1] == "up"
+    guard up || args[index+1] == "down", let presses = Int(args[index+2]), presses >= 1, presses <= 16 else {
+        emit(["error": "Name up or down and 1 to 16 presses."]); exit(1)
+    }
+    let key = up ? 2 : 3  // NX_KEYTYPE_BRIGHTNESS_UP, NX_KEYTYPE_BRIGHTNESS_DOWN
+    for _ in 0..<presses {
+        for pressed in [true, false] {
+            guard let event = NSEvent.otherEvent(with: .systemDefined, location: .zero,
+                    modifierFlags: NSEvent.ModifierFlags(rawValue: pressed ? 0xa00 : 0xb00), timestamp: 0, windowNumber: 0,
+                    context: nil, subtype: 8, data1: (key << 16) | ((pressed ? 0xa : 0xb) << 8), data2: -1),
+                  let cgEvent = event.cgEvent else {
+                emit(["error": "Could not prepare the brightness key."]); exit(1)
+            }
+            cgEvent.post(tap: .cghidEventTap)
+        }
+        usleep(60_000)
+    }
+    emit(["submitted": true, "presses": presses]); exit(0)
+}
 if args.contains("--music-state") {
     guard workspace.runningApplications.contains(where: { $0.bundleIdentifier == "com.apple.Music" && !$0.isTerminated }) else {
         emit(["player_state": "not_running"]); exit(0)

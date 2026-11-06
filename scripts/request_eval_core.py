@@ -45,7 +45,7 @@ WRITE_CALLS = ('add_event', 'add_reminder', 'complete_reminder', 'delete_reminde
                'input', 'press', 'choose_menu', 'click', 'drag')
 # Calls that change what is open or in front. With the writes: every effect must be accounted for.
 NAVIGATION_CALLS = ('launch_app', 'quit_app', 'new_window', 'close_window', 'close_tab', 'browse_url', 'activate', 'play_media',
-                    'music_search', 'open', 'scroll')
+                    'music_search', 'open', 'scroll', 'system_set')  # system_set: a reversible setting (volume, dark mode, Wi-Fi)
 EFFECT_CALLS = WRITE_CALLS+NAVIGATION_CALLS
 # Contention: a call whose wall time exceeds what Ollama accounts for by this much waited for another client.
 UNACCOUNTED_MS, RELOAD_MS = 250, 500

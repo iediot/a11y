@@ -7,7 +7,7 @@ OPERATIONS = ('answer', 'inspect_screen', 'move_object', 'move_geometry',
               'computer_task', 'inspect_media', 'play_media', 'type_text', 'press_key', 'scroll', 'capture_once', 'click_point', 'browser_search', 'browser_open', 'launch_app', 'new_window', 'close_window', 'close_tab', 'quit_app', 'focus_app', 'press_control', 'highlight', 'read_mail',
               'read_calendar', 'add_event', 'read_reminders', 'add_reminder', 'complete_reminder', 'delete_reminder', 'read_notes',
               'create_note', 'find_contact', 'recent_files', 'open_file', 'read_page', 'list_shortcuts', 'run_shortcut', 'system_info',
-              'weather', 'look_up')
+              'system_control', 'weather', 'look_up')
 INTENT_SCHEMA = {'type': 'object', 'additionalProperties': False,
     'required': ['operation', 'app_name', 'target', 'browser_mode', 'remaining_request'], 'properties': {
         'operation': {'enum': list(OPERATIONS)}, 'app_name': {'type': 'string'}, 'target': {'type': 'string'},
@@ -141,6 +141,11 @@ or "latest download"; put any requested reading/answer after opening in remainin
 ("summarize this page"); list_shortcuts; run_shortcut target = the shortcut's name;
 system_info for questions about this Mac itself, target one of macos_version, battery, storage,
 memory, appearance, wifi, uptime, model ("what macOS am I on", "how much battery is left").
+system_control changes or checks a setting: target "setting | change", setting volume, mute,
+brightness, appearance, wifi, bluetooth, focus or text_size, change up, down, on, off or a number
+with the user's amount words, empty to check ("turn the volume down a bit" "volume | down a bit",
+"turn on dark mode" "appearance | on", "larger font please" "text_size | up", "is wifi on?" "wifi |").
+Opening a settings pane is computer_task.
 when: for add_event and add_reminder the time as YYYY-MM-DDTHH:MM worked out from "now"
 ("at 6" is the next 6 o'clock; "tomorrow at 3" is 15:00 tomorrow), empty if no time is given;
 for weather the day; empty for every other operation.
@@ -320,8 +325,8 @@ def enforce_operation(plan, response):
     allowed = {operation, 'request_app_access', 'request_screen'}
     if operation in ('browser_search', 'browser_open'):
         allowed.add('browse_url')
-    if operation in ('computer_task', 'weather', 'look_up'):
-        allowed.add('start_task')  # a lookup carries on with the rest of the request as a task
+    if operation in ('computer_task', 'weather', 'look_up', 'system_control'):
+        allowed.add('start_task')  # a lookup or setting carries on with the rest of the request as a task
     if operation in ('move_object', 'move_geometry'):
         allowed.update(('move_to_point', 'move_companion'))
     if operation not in ('answer', 'inspect_screen') and action['type'] not in allowed:

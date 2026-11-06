@@ -41,7 +41,7 @@ def plan(op, target='', app='', **extra):
         value.update(acts_on_computer=False, reply='You’re welcome.')
     if op in ('type_text', 'create_note'):
         value['goal_mode'] = 'draft'
-    if op in ('add_event', 'add_reminder', 'complete_reminder', 'delete_reminder', 'run_shortcut'):
+    if op in ('add_event', 'add_reminder', 'complete_reminder', 'delete_reminder', 'run_shortcut', 'system_control'):
         value['goal_mode'] = 'change'
     # Defaults cover these reviewed synthetic families, not a production router.
     value['referent'] = {
@@ -144,6 +144,7 @@ def seeds():
             'list_shortcuts': (['list my shortcuts','what shortcuts do I have','show available shortcuts','which shortcuts can I run','read the list of shortcuts'][i], '', ''),
             'run_shortcut': (f'run the shortcut Demo {i}', f'Demo {i}', ''),
             'system_info': (['what macOS version is this','how much battery is left','how much storage is free','how much memory does this Mac have','what Mac model is this'][i], ['macos_version','battery','storage','memory','model'][i], ''),
+            'system_control': (['set the volume to 30 percent','switch Bluetooth off','switch to light mode','silence the sound','switch Wi-Fi off'][i], ['volume | 30','bluetooth | off','appearance | light','mute | on','wifi | off'][i], ''),
             'weather': (f'what is the weather in { ["Oslo", "Lima", "Tokyo", "Dublin", "Perth"][i]}', ['Oslo','Lima','Tokyo','Dublin','Perth'][i], ''),
             'look_up': (f'what is { ["the current population of Iceland", "the latest lunar mission", "the current mayor of Oslo", "the latest chess championship result", "the current population of Peru"][i]}', ['the current population of Iceland','the latest lunar mission','the current mayor of Oslo','the latest chess championship result','the current population of Peru'][i], ''),
         }
