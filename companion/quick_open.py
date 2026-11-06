@@ -4,11 +4,12 @@ Resolution order for X:
 1. a browser is named ("in Safari", "in a new Chrome tab"): the web, below;
 2. exactly one installed app matches X (same rules as launch requests);
 3. a known web app (web_apps.WEB_APPS) or a typed address: open it;
-4. otherwise: a web search for X.
+4. X is a near miss of exactly one installed app's name (app_names.closest_app): that app;
+5. otherwise: a web search for X.
 Anything after "and"/"then" stays for the computer task. Requests this parser
 does not clearly understand return None and go to the model as before."""
 import re
-from .app_names import ALIASES, normalized, resolve_app
+from .app_names import ALIASES, closest_app, normalized, resolve_app
 from .web_apps import BROWSER_WORDS, WEB_APPS, site_search
 
 VERB = r'(?:please\s+)?(?:can you\s+|could you\s+)?(?:open(?:\s+up)?|launch|start|go to|bring up)'
@@ -17,7 +18,7 @@ FOLLOW_UP = re.compile(r'\s*(?:,\s*)?\b(?:and(?:\s+then)?|then)\b\s+', re.I)
 DOMAIN = re.compile(r'(?:https?://)?(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,63}(?::\d+)?(?:[/?#]\S*)?', re.I)
 LOCAL_THINGS = {'folder', 'folders', 'file', 'files', 'document', 'documents', 'email', 'emails', 'message',
                 'messages', 'chat', 'tab', 'tabs', 'window', 'windows', 'page', 'link', 'button', 'menu', 'photo', 'photos'}
-FILLER = re.compile(r'(?:\s+(?:yourself|please|for me|now|right now|quickly|real quick))+\s*$', re.I)
+FILLER = re.compile(r'(?:\s+(?:yourself|please|for me|now|right now|quickly|real quick|instead|then))+\s*$', re.I)
 # Leading words that make X a description rather than a name ("open the second email",
 # "open a new window"); those go to the model.
 NOT_A_NAME = {'the', 'a', 'an', 'my', 'this', 'that', 'it', 'new', 'another', 'some', 'your', 'our', 'up'}
@@ -88,6 +89,16 @@ def plan(request, catalog):
     if browser is None and not rest and '/' not in name and (Path.home()/name).is_dir() and not name.startswith('.'):
         # "Can you open Movies?": a folder in the home folder (it became a web search, live).
         return {'operation': 'open_file', 'app_name': '', 'target': name, 'browser_mode': 'default', 'remaining_request': rest}
+    near = closest_app(name, catalog) if browser is None else None
+    if near is not None:
+        # "Open safarie" / "open calender" became a web search (request eval): a near miss of one
+        # installed app's name, when nothing else has that name, is that app.
+        return {'operation': 'launch_app', 'app_name': near['name'], 'target': '', 'browser_mode': 'default', 'remaining_request': rest}
+    if browser is None and re.match(r'^\W*(?:please\s+)?(?:can|could)\s+you\b', request, re.I):
+        # A question with no resolved app, site, address or folder may ask about
+        # capabilities. Let the interpreter distinguish that from a polite action
+        # request instead of silently searching the web for its object.
+        return None
     if not rest and browser is None and len(name.split()) <= 3:
         # "Open Canva": not installed and not a known site. Search, then the task opens its website
         # (a bare search page was the end of it, live).

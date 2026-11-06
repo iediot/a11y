@@ -151,7 +151,12 @@ class IntentTransportTests(unittest.TestCase):
         body = request.call_args_list[0].args[1]
         self.assertFalse(body['think'])
         self.assertEqual(body['options']['num_predict'], 700)  # room for a direct reply
-        self.assertEqual(body['format']['required'], ['operation', 'app_name', 'target', 'browser_mode', 'remaining_request', 'goal_mode', 'reply', 'when', 'acts_on_computer', 'referent'])
+        # The wire schema is one shape per group of operations (request_plan.INTENT_WIRE_SCHEMA); the
+        # launch_app shape holds the plan's fields except "when" and the artist, and no free reply.
+        shape = next(item for item in body['format']['anyOf'] if 'launch_app' in item['properties']['operation']['enum'])
+        self.assertEqual(sorted(shape['required']), ['acts_on_computer', 'app_name', 'browser_mode', 'goal_mode', 'operation',
+                                                      'referent', 'remaining_request', 'reply', 'target'])
+        self.assertEqual(shape['properties']['reply'], {'const': ''})
         self.assertNotIn('images', body['messages'][-1])
         self.assertEqual(plan['app_name'], 'Stremio')
 

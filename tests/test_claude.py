@@ -16,7 +16,7 @@ from companion.computer_task import schema_for
 from companion.models import RESPONSE_SCHEMA
 from companion.ollama import RequestCancelled, provider_from_env
 from companion.provider import AIConfig, ProviderError
-from companion.request_plan import INTENT_SCHEMA
+from companion.request_plan import INTENT_SCHEMA, INTENT_WIRE_SCHEMA
 
 
 def sse(text, stop='end_turn'):
@@ -122,13 +122,19 @@ class ClaudeTransport(unittest.TestCase):
         self.assertEqual(body['output_config']['effort'], 'medium')  # looking at the screen gets more thought
 
     def test_routing_uses_the_shared_planner(self):
-        plan = {'operation': 'launch_app', 'app_name': 'Microsoft Teams', 'target': '', 'browser_mode': 'default',
-                'remaining_request': '', 'goal_mode': 'inspect', 'reply': ''}
-        self.fake.replies += [(200, sse(json.dumps(plan))), (200, sse(json.dumps({'requires_followup_actions': False})))]
+        # The router's schema is one shape per group of operations (an anyOf root), so Claude gets it
+        # inside "result", like the task step, and writes only the fields launch_app's shape holds.
+        plan = {'acts_on_computer': True, 'app_name': 'Microsoft Teams', 'browser_mode': 'default', 'goal_mode': 'inspect',
+                'operation': 'launch_app', 'referent': 'destination', 'remaining_request': '', 'reply': '', 'target': ''}
+        self.fake.replies += [(200, sse(json.dumps({'result': plan}))), (200, sse(json.dumps({'requires_followup_actions': False})))]
         result = self.provider.interpret_request('Microsoft Teams.')
         self.assertEqual(result['operation'], 'launch_app')
+        self.assertEqual(result, dict(plan, when=''))  # the plan keeps every field
         first = self.fake.requests[0]['body']
-        self.assertEqual(first['output_config']['format']['schema']['properties']['operation'], INTENT_SCHEMA['properties']['operation'])
+        self.assertEqual(first['output_config']['format']['schema']['properties']['result'], INTENT_WIRE_SCHEMA)
+        shapes = first['output_config']['format']['schema']['properties']['result']['anyOf']
+        self.assertEqual(sorted(operation for shape in shapes for operation in shape['properties']['operation']['enum']),
+                         sorted(INTENT_SCHEMA['properties']['operation']['enum']))
 
     def test_refusal_and_truncation_never_become_actions(self):
         self.fake.replies.append((200, sse('', stop='refusal')))

@@ -11,7 +11,7 @@ from .models import Identity, RESPONSE_SCHEMA, text, validate_response, Validati
 from .ollama import provider_from_env, OllamaProvider
 from .storage import Store
 from .onboarding import Introduction
-from .app_names import resolve_app
+from .app_names import launchable, resolve_app
 from .media import describe_music, describe_play_result
 from .input_actions import INPUT_TYPES
 from urllib.parse import urlencode, urlsplit
@@ -118,6 +118,11 @@ ABOUT_CONVERSATION = re.compile(r'^\W*(?:what|which|who|when|where|how|did|do|wa
                                 r'(?:say|said|tell|told|mention|mentioned|ask|asked)\b|\byou\s+(?:just\s+)?(?:said|told me|answered)\b)', re.I)
 LAUNCH_FILLER = frozenset("open launch start run bring up the app application program window in please can could would you "
                           "for me my a an to now hey ok okay ally switch go back focus show over return bring front forward".split())
+# "In Notes, …", "… with Preview": the app is where something else is to happen.
+WORK_PLACE = frozenset(('in', 'inside', 'within', 'into', 'on', 'of', 'from', 'with', 'using'))
+# Actions the UI runs or shows at once; anything else waits as a button the next request can refer to.
+RUNS_UNASKED = frozenset(('launch_app', 'browse_url', 'focus_app', 'new_window', 'play_media', 'close_window', 'close_tab', 'quit_app',
+                          'start_task', 'move_companion', 'move_to_point', 'request_screen', 'request_app_access', 'capture_once'))
 # A request about what is on screen now, and one to find something.
 SCREEN_WORDS = re.compile(r'\b(?:screen|this|here|see|seeing|showing|shown|visible|window|page|display|open|front|looking)\b', re.I)
 FINDING_WORDS = re.compile(r'\b(?:find|search|look for|locate|show me|go to|take me|get me|open)\b', re.I)
@@ -265,6 +270,35 @@ NAMED_DAY = re.compile(r'\b(?:today|tonight|tomorrow|yesterday|monday|tuesday|we
 
 
 STATED_TIME = re.compile(r"\bat\s+(\d{1,2})(?:[:.](\d{2}))?\s*(a\.?m\.?|p\.?m\.?)?(?![\d:])", re.I)
+WEEKDAYS = ('monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday')
+STATED_DAY = re.compile(r"\b(?:(next|this)\s+)?(today|tonight|tomorrow|%s)\b" % '|'.join(WEEKDAYS), re.I)
+AT_NOON = re.compile(r"\bat\s+(noon|midday|midnight)\b", re.I)
+
+
+def stated_day(when, request, now=None):
+    """The day the user named ("tomorrow", "next monday") wins over the model's: "next monday at 10"
+    said on a Friday came back as the following Friday (request eval). The clock time is kept.
+    A weekday is its coming occurrence; "next <weekday>" on that same weekday is a week on."""
+    from datetime import timedelta
+    from .mac_apps import parse_when
+    match = STATED_DAY.search(request)
+    start = parse_when(when)
+    if not match or start is None:
+        return when
+    now = now or datetime.now()
+    qualifier, day = (match.group(1) or '').casefold(), match.group(2).casefold()
+    if day in ('today', 'tonight'):
+        ahead = 0
+    elif day == 'tomorrow':
+        ahead = 1
+    else:
+        ahead = (WEEKDAYS.index(day)-now.weekday()) % 7
+        if ahead == 0 and (qualifier == 'next' or start.replace(year=now.year, month=now.month, day=now.day) <= now):
+            ahead = 7  # that weekday is today: the time has passed, or "next" asks for a week on
+    wanted = (now+timedelta(days=ahead)).date()
+    if start.date() == wanted:
+        return when
+    return datetime.combine(wanted, start.time()).strftime('%Y-%m-%dT%H:%M')
 
 
 def stated_time(when, request, now=None):
@@ -273,9 +307,13 @@ def stated_time(when, request, now=None):
     stays the model's; upcoming() then moves a past time to its next occurrence."""
     from .mac_apps import parse_when
     match = STATED_TIME.search(request)
-    if not match or int(match.group(1)) > 23 or int(match.group(2) or 0) > 59:
+    noon = AT_NOON.search(request)
+    if noon:
+        hour, minute, half = (0 if noon.group(1).casefold() == 'midnight' else 12), 0, 'a' if noon.group(1).casefold() == 'midnight' else 'p'
+    elif not match or int(match.group(1)) > 23 or int(match.group(2) or 0) > 59:
         return when
-    hour, minute, half = int(match.group(1)), int(match.group(2) or 0), (match.group(3) or '').casefold()[:1]
+    else:
+        hour, minute, half = int(match.group(1)), int(match.group(2) or 0), (match.group(3) or '').casefold()[:1]
     now = now or datetime.now()
     start = parse_when(when) or now
     if half:
@@ -386,6 +424,7 @@ class Companion:
         self.pending_app_write = None   # an app change waiting to be shown for confirmation
         self.last_request_plan = None
         self.last_task = None           # the last request that did something, for "the same with X"
+        self.proposed = None            # the action the last reply offered for confirmation, until the next request
 
     @classmethod
     def from_env(cls):
@@ -466,7 +505,7 @@ class Companion:
         """The first, predictable step of a compound goal, built without a model call."""
         try:
             if opening['operation'] == 'launch_app':
-                matches = resolve_app(opening['app_name'], self.desktop_context.installed_apps())
+                matches = launchable(opening['app_name'], self.desktop_context.installed_apps())
                 if len(matches) == 1:
                     return self.desktop_context.authorize_action({'type': 'launch_app', 'bundle_id': matches[0]['bundle_id']})
                 return None
@@ -554,6 +593,31 @@ class Companion:
         return (name+(' — '+title if title else '')) if name else ''
 
     @staticmethod
+    def as_said(plan, request):
+        """Which browser, and a new window or tab, are the user's to ask for. The interpreter named
+        Safari and a new tab or window for plain searches (request eval): a search went to Safari
+        with another browser as the default, and a new window was asked of a browser whose helper
+        refuses one. A browser the request does not mention gives way to the default browser; a
+        window/tab mode it does not mention, to the browser's own placement."""
+        from .web_apps import BROWSER_WORDS
+        mentioned = {name for word, name in BROWSER_WORDS.items() if re.search(r'\b'+word+r'\b', request, re.I)}
+
+        def checked(step):
+            if not isinstance(step, dict) or step.get('operation') not in ('browser_search', 'browser_open'):
+                return step
+            words = str(step.get('app_name', '')).casefold().split()
+            browser = BROWSER_WORDS.get(words[-1]) if words else None
+            if browser and browser not in mentioned:
+                step = dict(step, app_name='')
+            if step.get('browser_mode') in ('window', 'tab') and not re.search(r'\b(?:windows?|tabs?)\b', request, re.I):
+                step = dict(step, browser_mode='default')
+            return step
+        plan = checked(plan)
+        if isinstance(plan.get('opening'), dict):
+            plan = dict(plan, opening=checked(plan['opening']))
+        return plan
+
+    @staticmethod
     def guessed_address(request, target):
         """True when a browser_open address is neither in the request nor a known site's."""
         from urllib.parse import urlsplit
@@ -567,10 +631,29 @@ class Companion:
         return host not in known and host not in request.casefold() and site not in request.casefold()
 
     @staticmethod
-    def beyond_app_name(request, app_name):
-        """True when a launch request says more than the app's name: "in System Settings, open Displays"."""
-        words = set(re.findall(r"[\w'-]+", request.casefold()))-set(re.findall(r"[\w'-]+", app_name.casefold()))
-        return bool(words-LAUNCH_FILLER)
+    def beyond_app_name(request, app_name, target=''):
+        """True when a launch request asks for more than the app: something after its name ("switch
+        Calendar to the day view"), the app as the place for something else ("in System Settings, open
+        Displays", "open the Calendar in Teams"), or a target the interpreter picked out that is not
+        the app. Words before the name are how the request is put ("um could you pull up my …"):
+        every unlisted one used to turn a plain open into a screen task (request eval). Whether they
+        ask for more is the interpretation's call (remaining_request and the provider's coverage check)."""
+        from .app_names import normalized
+        said = lambda value: re.findall(r"[\w'-]+", value.casefold())
+        words, name, named = said(request), normalized(app_name), set(said(app_name))
+        aim = set(said(target))-LAUNCH_FILLER
+        if aim and not aim & named and normalized(target) != name:
+            return True
+        spans = [(start, end) for start in range(len(words)) for end in range(start+1, min(len(words), start+5)+1)]
+        span = next((span for span in spans if name and normalized(' '.join(words[span[0]:span[1]])) == name), None)
+        if span is None:
+            # Said in part ("settings" for System Settings): the longest run of the name's own words.
+            runs = [span for span in spans if all(word in named for word in words[span[0]:span[1]])]
+            span = max(runs, key=lambda span: span[1]-span[0], default=None)
+        if span is None:
+            return bool(set(words)-named-LAUNCH_FILLER)  # named some other way ("the browser")
+        before = [word for word in words[:span[0]] if word not in ('the', 'my', 'a', 'an', 'your')]
+        return bool(set(words[span[1]:])-LAUNCH_FILLER) or bool(before and before[-1] in WORK_PLACE)
 
     def named_installed_app(self, request, writes=False):
         """An installed app, not a browser, that the request names ("the App Store", "TextEdit").
@@ -697,6 +780,11 @@ class Companion:
         # request ("open Notes") from a change.
         short = len(request.split()) <= 5
         from .arithmetic import answer as arithmetic_answer, clock_answer
+        if getattr(self, 'proposed', None):  # absent on a Companion built without __init__ (scripts/router_data.py)
+            # "Cancel that" / "make it a reminder instead" point at the proposal still on screen; the
+            # router is told about it (route_request). Rewritten here, "cancel that" became "cancel the
+            # reminder to water the plants" and then a hunt for a reminder to delete (request eval).
+            return request
         if not self.last_task or not (REFERS_BACK.search(request) or short) or ABOUT_CONVERSATION.search(request) \
                 or NEVER_MIND.match(request) or arithmetic_answer(request) or clock_answer(request) \
                 or not hasattr(self.provider, 'complete_structured'):
@@ -771,6 +859,7 @@ class Companion:
 
     def route_request(self, request):
         self.pending_page = self.pending_app_write = None
+        proposed, self.proposed = getattr(self, 'proposed', None), None  # a new request drops the offered button (desktop.ask)
         self.reply_private = False
         after_mail, self.mail_read = self.mail_read, False
         from .arithmetic import answer as arithmetic_answer, clock_answer
@@ -869,6 +958,13 @@ class Companion:
         if front:
             # What the user is looking at: "any notifications?" right after opening Teams is about Teams.
             context['front_app'] = front
+        if proposed:
+            # The button the last reply offered: "cancel that" declines it, "make it a reminder instead"
+            # changes it. Interpreted with that in view rather than by a word list. Pressed, the UI
+            # records the change under the button's label (desktop.py, AppWriteWorker done): then it is done.
+            recent = [item['content'] for item in self.history(limit=2) if item['role'] == 'user']
+            proposed = dict(proposed, done=proposed['offered'] in recent)
+            context['pending_proposal' if not proposed['done'] else 'last_confirmed_action'] = proposed
         if ABOUT_CONVERSATION.search(request) and self.conversation:
             # "What number did I just say?" is about this conversation, which only the reply sees.
             remembered = self.converse(request, context)
@@ -883,7 +979,7 @@ class Companion:
             for key in ('computed', 'full_text', 'read_aloud', 'app_write', 'resolved_request'):  # set only by code
                 interpreted.pop(key, None)
             from .request_plan import semantic_plan
-            interpreted = semantic_plan(interpreted, request)
+            interpreted = self.as_said(semantic_plan(interpreted, request), request)
             searching = interpreted.get('operation') == 'browser_search' or (
                 # The router opened the site for "search Apple's support site for battery" (live, v3).
                 interpreted.get('operation') == 'browser_open' and re.match(r'^\W*(?:please\s+)?search\b', request, re.I))
@@ -958,7 +1054,7 @@ class Companion:
             from .request_plan import _normalized
             remaining = str(interpreted.get('remaining_request', ''))
             if interpreted.get('operation') in ('launch_app', 'focus_app') and (not remaining.strip() or _normalized(remaining) == _normalized(request)) \
-                    and self.beyond_app_name(request, str(interpreted.get('app_name', ''))):
+                    and self.beyond_app_name(request, str(interpreted.get('app_name', '')), str(interpreted.get('target', ''))):
                 # "In System Settings, open Displays" only brought Settings forward (live): the rest is work in it.
                 # So did "Switch Calendar to the day view" (focus_app, live broad): opening a running app brings it forward.
                 from .request_plan import with_opening
@@ -999,8 +1095,10 @@ class Companion:
                 # "Are there any notifications that require my attention" read the last email (live).
                 interpreted = dict(interpreted, operation='computer_task', app_name='', target=request, remaining_request='')
             if (interpreted.get('operation') == 'answer' and not interpreted.get('computed') and not self.unsure(interpreted, request)
-                    and str(interpreted.get('reply', '')).strip()):
-                # Conversation is answered with short-term memory; empty replies use the normal path.
+                    and str(interpreted.get('reply', '')).strip() and not (proposed and not proposed['done'])):
+                # Conversation is answered with short-term memory; empty replies use the normal path. An
+                # answer about the offered button ("cancel that") keeps the router's reply: the memory
+                # rewrite, which never saw the button, promised to remove a reminder (request eval).
                 remembered = self.converse(request, context)
                 if remembered:
                     interpreted = dict(interpreted, reply=remembered)
@@ -1037,11 +1135,13 @@ class Companion:
                 when = str(interpreted.get('when', '')).strip()
                 if interpreted['operation'] in ('add_event', 'add_reminder'):
                     title = self.item_title(request)
+                    if title and not re.sub(r"\s+", '', AT_NOON.sub('', STATED_TIME.sub('', STATED_DAY.sub('', title)))).strip(' ,.-'):
+                        title = ''  # "friday at noon" is when, not what (request eval); the router's title stands
                     if title:
                         rest = target.partition('|')[2]
                         target = title+(' |'+rest if rest else '')
                 if interpreted['operation'] in ('add_event', 'add_reminder') and when:
-                    when = upcoming(stated_time(when, request), request)
+                    when = upcoming(stated_day(stated_time(when, request), request), request)
                     # The time has its own field: packed into target, a small model often wrote
                     # only "6 PM" and lost the reminder's title (live).
                     title, _, minutes = target.partition('|')
@@ -1188,6 +1288,20 @@ class Companion:
             if isinstance(state.get('running'), bool):
                 name = receipt.get('label', 'Open the app').removeprefix('Open ')
                 message = (name+' is running'+(' and active.' if state.get('active') else '.')) if state['running'] else ('The system accepted the launch request, but I could not confirm that '+name+' stayed running.')
+                if receipt.get('remaining_request'):
+                    message += ' Still pending: '+receipt['remaining_request']+'; it has not been executed.'
+                return {'desktop_action': None, 'target': None, 'message': message,
+                        'effective': self.preferences.effective(self.identity)}
+        if mode == 'verify' and (self.last_action_result or {}).get('type') == 'focus_app' and self.desktop_context:
+            # Which app is in front is observed, not described: a model wrote four sentences about
+            # "the action" and "the verification protocol" for a plain switch (request eval).
+            receipt = self.last_action_result
+            state = self.desktop_context.app_state(receipt['bundle_id']) if receipt.get('bundle_id') else {}
+            front = (self.desktop_context.context().get('app') or {}).get('bundle_id')
+            in_front = state.get('active') if isinstance(state.get('active'), bool) else (front == receipt.get('bundle_id') if front else None)
+            if in_front is not None:
+                name = receipt.get('label', '').removeprefix('Switch to ') or 'The app'
+                message = name+' is in front.' if in_front else 'I asked '+name+' to come forward, but it is not in front yet.'
                 if receipt.get('remaining_request'):
                     message += ' Still pending: '+receipt['remaining_request']+'; it has not been executed.'
                 return {'desktop_action': None, 'target': None, 'message': message,
@@ -1393,7 +1507,7 @@ class Companion:
                     'target': None, 'desktop_action': {'type': 'capture_once'}}
             elif operation == 'launch_app' or (operation == 'new_window' and request_plan['app_name'].strip().casefold() in ('safari', 'apple safari')):
                 catalog = self.desktop_context.installed_apps()
-                matches = resolve_app(request_plan['app_name'], catalog)
+                matches = launchable(request_plan['app_name'], catalog)  # "safarie" is Safari
                 if len(matches) == 1:
                     app = matches[0]
                     prebuilt = {'request_kind': operation, 'message': 'Open '+app['name']+'…',
@@ -1538,6 +1652,8 @@ class Companion:
         self.remember('assistant', response['message'].split('\n', 1)[0] if full_text else response['message'], private=private)
         result = {'desktop_action': response.get('desktop_action'), 'message': response['message'],
                   'target': response['target'], 'effective': preferences}
+        if mode != 'verify' and action.get('label') and action.get('type') not in RUNS_UNASKED:
+            self.proposed = {'request': request[:300], 'offered': action['label'][:200], 'done': False}
         if full_text:
             result.update(full_text=True, read_aloud=bool(request_plan.get('read_aloud')))
         return result

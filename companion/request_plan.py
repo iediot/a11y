@@ -17,7 +17,63 @@ INTENT_SCHEMA = {'type': 'object', 'additionalProperties': False,
         'referent': {'enum': ['companion', 'destination', 'visible_target', 'other']},
         'acts_on_computer': {'type': 'boolean'}}}
 INTENT_SCHEMA['required'] += ['goal_mode', 'reply', 'when', 'acts_on_computer', 'referent']
-INTENT_SYSTEM = '''Interpret ONLY the latest user request. Do not execute or answer it.
+# INTENT_SCHEMA names every field of a plan. INTENT_WIRE_SCHEMA is what the router model writes: one
+# object shape per group of operations. Ollama writes required keys sorted by name, so the model
+# decides acts_on_computer, app_name, browser_mode, goal_mode, operation, referent,
+# remaining_request, reply, target, when (then the optional media_artist), each conditioned on
+# everything before it. Measured with scripts/router_wire_probe.py, this model's decisions follow
+# that context closely: shorter key names, a different key order, or leaving out a default value in
+# the middle changed operations, targets and times, and fields the model was merely allowed to
+# leave out (browser_mode, goal_mode, remaining_request) went missing when they mattered. So the
+# shapes change nothing a later decision is conditioned on:
+#   - each shape stops after the last field that is read for its operations ("when" only has a
+#     reader for add_event, add_reminder and weather; "media_artist" only for play_media);
+#   - "reply" is free text for answer only. Elsewhere the rules already say to leave it empty and
+#     the shape allows nothing else: the model used to invent a reply there now and then (a battery
+#     level, the text of an email), which no code showed, and once ran to the token limit with it.
+# With the same prompt, every field that is still written is therefore decided exactly as before,
+# except after a reply that should not have been written.
+INTENT_PREFIX = ('acts_on_computer', 'app_name', 'browser_mode', 'goal_mode', 'operation', 'referent', 'remaining_request')
+TIMED_OPERATIONS = ('add_event', 'add_reminder', 'weather')  # the only readers of "when"
+INTENT_OMITTED = {'when': ''}  # what a field its shape leaves out means
+
+
+def _intent_shape(operations, fields, optional=()):
+    properties = {key: INTENT_SCHEMA['properties'][key] for key in INTENT_PREFIX + fields + optional}
+    properties['operation'] = {'enum': list(operations)}
+    if tuple(operations) != ('answer',):
+        properties['reply'] = {'const': ''}
+    return {'type': 'object', 'additionalProperties': False, 'required': list(INTENT_PREFIX + fields), 'properties': properties}
+
+
+INTENT_WIRE_SCHEMA = {'anyOf': [
+    _intent_shape(('answer',), ('reply', 'target')),
+    _intent_shape(TIMED_OPERATIONS, ('reply', 'target', 'when')),
+    _intent_shape(('play_media',), ('reply', 'target', 'when'), ('media_artist',)),
+    _intent_shape(tuple(op for op in OPERATIONS if op not in ('answer', 'play_media') + TIMED_OPERATIONS), ('reply', 'target'))]}
+
+
+def expand_intent(value):
+    """The plan for what the router wrote: a field its operation's shape leaves out gets the value
+    it means there (empty). Anything else is left for validate_plan to judge."""
+    if not isinstance(value, dict):
+        return value
+    return {**INTENT_OMITTED, **value}
+
+
+def wire_intent(plan):
+    """A plan as the router writes it, keys in Ollama's order (required sorted, then optional), for
+    training data and tests. Fields the operation's shape does not hold are dropped."""
+    shape = next(item for item in INTENT_WIRE_SCHEMA['anyOf'] if plan['operation'] in item['properties']['operation']['enum'])
+    required = sorted(shape['required'])
+    optional = sorted(key for key in shape['properties'] if key not in required and key in plan)
+    return {key: '' if shape['properties'][key] == {'const': ''} else plan[key] for key in required + optional}
+INTENT_SYSTEM = '''Interpret ONLY the latest user request. Do not execute computer actions.
+For ordinary conversation or knowledge, answer in reply as specified below.
+You are A11y (spoken Ally), the assistant on the user's computer. You can open apps
+and perform supported computer tasks when requested. A question about your abilities
+is conversation, not a request to demonstrate them. Never promise an action in a
+conversational reply, invent completed work, or treat window titles as things the user said.
 Return operation, app_name (the actual requested app, empty if none), target, and
 browser_mode (default for non-browser requests), remaining_request (empty if the
 operation covers the entire request). Preserve additional requested work in
@@ -145,6 +201,18 @@ an app ("search my notes for X") is computer_task too.
 acts_on_computer: true when the user wants something opened, shown, found, looked up, searched,
 played, typed, written, clicked, closed or changed on the computer, in any app or website;
 false for conversation, questions (weather and look_up too) and describing the screen.
+Questions about your abilities have operation=answer and acts_on_computer=false;
+mentioning an action is not a request to perform or demonstrate it. A polite request
+to operate on a specific destination is an action request.
+pending_proposal, when present, is an action A11y offered in its last reply and is still waiting
+for the user's confirmation: it has NOT been done. If the latest request declines, cancels or
+stops it ("cancel that", "no, forget it", "don't"), the operation is answer with a short
+acknowledgement in reply and acts_on_computer false; there is nothing to delete, complete or
+undo. If it changes it ("make it a reminder instead", "actually at 8"), return the changed
+request as a whole, taking the unchanged details from pending_proposal.request.
+last_confirmed_action, when present, is the change the user confirmed and A11y carried out just
+before; "undo that" or "delete it" then concerns that item (delete_reminder with its title, or
+computer_task), never pending_proposal.
 front_app is the app and window the user is looking at now. A question that names no app
 ("any notifications for me?", "anything new here?", "what does this say?") is about front_app:
 computer_task for checking notifications, messages or activity in it.
@@ -307,6 +375,20 @@ def highlight_only(request, plan=None):
 def semantic_plan(plan, request):
     """Validate operation ownership against the model's interpretation, not phrase matches."""
     plan = validate_plan(plan)
+    if (plan['operation'] == 'answer' and plan.get('referent') == 'other'
+            and str(plan.get('reply', '')).strip()
+            and not any(str(plan.get(key, '')).strip() for key in ('app_name', 'target', 'remaining_request'))):
+        # An explicit conversational answer with no action destination cannot
+        # authorize desktop work solely through a contradictory auxiliary flag.
+        # Destination/visible-target plans still follow their normal task paths.
+        plan = dict(plan, acts_on_computer=False)
+    said = lambda value: set(re.findall(r"[\w'-]+", str(value).casefold()))
+    if (plan['operation'] in ('browser_search', 'browser_open') and said(plan.get('remaining_request', ''))
+            and said(plan['remaining_request']) <= said(plan['target'])):
+        # The query written again as remaining work is not more work: "search for cheap flights to
+        # porto" came back with target and remaining_request both "cheap flights to porto" and
+        # became a screen task (request eval). Work beyond the query still has words of its own.
+        plan = dict(plan, remaining_request='')
     # Addressing or talking about the companion is not an instruction to move
     # her. An explicitly conversational answer must survive auxiliary referents.
     if plan['operation'] == 'answer' and plan.get('acts_on_computer') is False:

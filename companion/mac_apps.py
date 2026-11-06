@@ -148,10 +148,17 @@ def read_reminders(bridge, scope, now=None):
     now = now or datetime.now()
     items = bridge.reminders()
     end_of_day = now.replace(hour=23, minute=59, second=59)
+    lead, later = '', 0
     if (scope or '').strip().casefold() in ('today', 'due', 'overdue', 'due today'):
-        items = [item for item in items if item.get('due') and datetime.fromtimestamp(item['due']) <= end_of_day]
-        if not items:
+        due = [item for item in items if item.get('due') and datetime.fromtimestamp(item['due']) <= end_of_day]
+        if not due and items:
+            # "Nothing is due today." was the whole answer while open reminders without a date
+            # existed (request eval): say so, then list what is open.
+            lead = 'Nothing is due today. '
+        elif not due:
             return 'Nothing is due today.'
+        else:
+            later, items = len(items)-len(due), due
     if not items:
         return 'You have no open reminders.'
     items.sort(key=lambda item: item.get('due') or float('inf'))
@@ -162,12 +169,20 @@ def read_reminders(bridge, scope, now=None):
             when = datetime.fromtimestamp(item['due'])
             due = ' (overdue)' if when < now else ' (due '+spoken_day(when, now)+(' '+clock(when) if when.hour or when.minute else '')+')'
         lines.append(item['title']+due)
-    return ('You have '+str(len(items))+' open reminder'+('s' if len(items) != 1 else '')+':\n'+'\n'.join(lines)
-            +('\n…and '+str(len(items)-10)+' more.' if len(items) > 10 else ''))
+    return (lead+'You have '+str(len(items))+' open reminder'+('s' if len(items) != 1 else '')+(' due today' if later else '')+':\n'+'\n'.join(lines)
+            +('\n…and '+str(len(items)-10)+' more.' if len(items) > 10 else '')
+            +('\n'+str(later)+' more '+('is' if later == 1 else 'are')+' not due today.' if later else ''))
+
+
+# Words of a description that are not the item's own: "my reminder about the dentist".
+DESCRIBING = frozenset('the a an my our your about for of on to in at with called named titled one that this '
+                       'reminder reminders note notes shortcut file item'.split())
 
 
 def best_match(name, candidates, key):
-    """The one candidate whose key matches name (exact, then contains), or None if 0 or several."""
+    """The one candidate whose key matches name (exact, then contains, then described), or None if
+    0 or several. Described: every word of the name that says something ("dentist reminder",
+    "the one about the dentist") is a word of that title alone ("Book the dentist")."""
     wanted = ' '.join(name.casefold().split())
     if not wanted:
         return None
@@ -175,7 +190,12 @@ def best_match(name, candidates, key):
     if len(exact) == 1:
         return exact[0]
     partial = [item for item in candidates if wanted in key(item).casefold()]
-    return partial[0] if len(partial) == 1 else None
+    if partial:
+        return partial[0] if len(partial) == 1 else None
+    words = [word for word in re.findall(r"[^\W_]+(?:'[^\W_]+)?", wanted) if word not in DESCRIBING]
+    described = [item for item in candidates if words and all(
+        re.search(r'(?<![^\W_])'+re.escape(word)+r'(?![^\W_])', key(item).casefold()) for word in words)]
+    return described[0] if len(described) == 1 else None
 
 
 # --- Notes, Contacts, browser page (AppleScript) --------------------------------------------------
@@ -379,6 +399,10 @@ def open_file(target, home=None, opener=None, *, script=None, read_content=False
     from pathlib import Path
     named = re.sub(r'^(?:my|the)\s+|\s+folder$', '', wanted, flags=re.I).strip()
     folder_path = (home or Path.home())/named if named and '/' not in named and not named.startswith('.') else None
+    if folder_path is not None and folder_path.is_dir() and (folder_path/'Contents').is_dir():
+        # An app or installer bundle is a folder too: "open my X.app" must not launch it.
+        opener(['open', '-R', str(folder_path)], capture_output=True, timeout=15)
+        return 'Showed '+folder_path.name+' in Finder. I only open documents myself; apps and installers you open yourself.'
     if folder_path is not None and folder_path.is_dir():
         # "Open my Movies folder": a folder in the home folder opens in Finder.
         opener(['open', str(folder_path)], capture_output=True, timeout=15)
@@ -532,6 +556,10 @@ def prepare(operation, target, *, bridge, browser=None, script=None, runner=None
         label = 'Add reminder “'+title[:80]+'”'+(' for '+spoken_day(when, now)+' at '+clock(when) if when else '')
         return 'confirm', {'type': 'app_write', 'kind': 'add_reminder', 'title': title[:200],
                            'due': int(when.timestamp()) if when else 0, 'label': label}
+    if operation in ('delete_reminder', 'complete_reminder') and not (target or '').strip():
+        # "Delete it" with nothing named was answered 'I could not find one open reminder called “”'
+        # (request eval): with no reminder named there is nothing to look for, so ask.
+        return 'answer', 'What should I delete?' if operation == 'delete_reminder' else 'Which reminder is done?'
     if operation == 'delete_reminder':
         item = best_match(target or '', bridge.reminders(), lambda r: r.get('title', ''))
         if item is None:

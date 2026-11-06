@@ -193,6 +193,16 @@ class FilesAndShortcutsTests(unittest.TestCase):
         self.assertIn('Showed Setup.pkg in Finder', mac_apps.open_file('latest download', self.home, opener))
         self.assertEqual(opened[-1][:2], ['open', '-R'])
 
+    def test_an_app_bundle_named_like_a_folder_is_only_revealed(self):
+        (self.home/'Tool.app'/'Contents'/'MacOS').mkdir(parents=True)
+        (self.home/'Projects').mkdir()
+        opened = []
+        opener = lambda args, **kw: opened.append(args)
+        self.assertIn('Showed Tool.app in Finder', mac_apps.open_file('my Tool.app folder', self.home, opener))
+        self.assertEqual(opened[-1], ['open', '-R', str(self.home/'Tool.app')])
+        self.assertEqual(mac_apps.open_file('my Projects folder', self.home, opener), 'Opened Projects.')
+        self.assertEqual(opened[-1], ['open', str(self.home/'Projects')])
+
     def test_shortcuts_run_only_by_exact_known_name_after_confirmation(self):
         runner = Mock(return_value=Mock(stdout='Morning routine\nFocus on\n', returncode=0))
         kind, action = mac_apps.prepare('run_shortcut', 'morning routine', bridge=None, runner=runner)
