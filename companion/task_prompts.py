@@ -98,11 +98,13 @@ FILE_INTERACTION_SCHEMA = {'type':'object','additionalProperties':False,'require
 
 # A second opinion on a button press the step model called navigation (ComputerTask.commits). The
 # goal is left out on purpose: being asked for does not make a commit safe to run unconfirmed.
-COMMIT_SYSTEM = '''One button is about to be pressed on the user's computer. Decide what pressing it does, from its
-label and where it is.
+COMMIT_SYSTEM = '''One control (kind: a button, menu command, link or checkbox) is about to be pressed on the user's
+computer. Decide what pressing it does, from its label and where it is.
 commit: it finalizes or changes something outside the screen: places an order, books, pays, sends,
-submits, publishes, saves, deletes, signs up, confirms a choice, starts an installation or a download.
-The user must approve these first.
+submits, publishes, saves, deletes, signs up, confirms a choice, starts an installation or a download,
+accepts a call, replies, forwards, moves to junk, leaves or deactivates something, authorizes a device,
+changes document content (cut, replace all, undo), or ticks a box that agrees to terms, gives consent
+or subscribes. The user must approve these first.
 navigate: it only shows something: opens a page, view, menu or panel, goes back or forward, moves to
 the next or previous page of results, expands or collapses, searches, sorts, filters, plays or pauses.
 Nothing is sent or written.

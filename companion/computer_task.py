@@ -23,6 +23,7 @@ from .task_answers import (  # noqa: F401 - re-exported: imported and patched as
     ANSWER_SYSTEM, ANSWER_SCHEMA, AnswerWriting)
 from .task_fallbacks import (  # noqa: F401 - re-exported: imported and patched as computer_task.<name>
     PANE_SYSTEM, PANE_SYSTEM_WINDOWS, MENU_SYSTEM, MENU_UNSAFE, MENU_CONTENT, Fallbacks)
+from .task_choices import CHOOSE_SYSTEM, Choosing  # noqa: F401 - re-exported
 
 
 # "Any new notifications?" means opening the app's notification view, not reading whatever
@@ -728,7 +729,7 @@ def accepts_cancel(provider):
     return 'cancel' in parameters or any(p.kind is p.VAR_KEYWORD for p in parameters.values())
 
 
-class ComputerTask(CompletionChecks, AnswerWriting, Fallbacks):
+class ComputerTask(CompletionChecks, AnswerWriting, Fallbacks, Choosing):
     def __init__(self, goal, *, automatic=False, max_steps=24, goal_mode=None, opening=None, looking_at=None):
         self.goal = text(goal, 'computer task', 2000)
         # The app and window in front when the user asked, for a goal that names no app.
@@ -1681,7 +1682,10 @@ class ComputerTask(CompletionChecks, AnswerWriting, Fallbacks):
         if action['type'] == 'press_key' and action.get('key') == 'enter' and risk == 'navigation':
             if self.goal_mode == 'inspect' and search_field_focused(snapshot):
                 return False
-            if self.goal_mode == 'draft' and snapshot.get('focused_role') == 'AXTextArea':
+            if (self.goal_mode == 'draft' and snapshot.get('focused_role') == 'AXTextArea'
+                    and (snapshot.get('window') or {}).get('document')):
+                # A new line in a document (the window is a file). In a chat or mail composer, which is
+                # no document, Enter sends: it is confirmed (review: the chooser offers enter cheaply).
                 return False
         return needs_review(action, risk)
 
@@ -1689,6 +1693,8 @@ class ComputerTask(CompletionChecks, AnswerWriting, Fallbacks):
         """What a left click or a press lands on, in the words of ROLE_NAMES ('button', 'link', 'file or
         folder', ...), from the accessibility snapshot or, for a bare point, from what macOS reports
         under it. None when nothing says."""
+        if action.get('type') == 'choose_menu':
+            return 'menu item'
         if action.get('type') == 'press_control':
             control = next((c for c in snapshot.get('controls') or [] if isinstance(c, dict) and c.get('id') == action.get('control_id')), None)
             return ROLE_NAMES.get((control or {}).get('role'))
@@ -1718,9 +1724,12 @@ class ComputerTask(CompletionChecks, AnswerWriting, Fallbacks):
         items: links, tabs, fields, list rows and files move around or select, and back/forward and
         decline buttons are known. commit and unsure both wait for the user; a failed check does too.
         Controls that commit without being exposed as buttons are not covered here."""
-        label = ' '.join(str(action.get('label', '')).split())
-        if (action.get('type') not in ('click_point', 'press_control') or kind not in ('button', 'menu item')
-                or sum(c.isalpha() for c in label) < 2 or DECLINE.match(label) or self.is_history(action)):
+        label = ' '.join(str(action.get('path', '') if action.get('type') == 'choose_menu' else action.get('label', '')).split())
+        # Menu commands too ("Order > Place Order" ran unconfirmed as a chosen command, review), and links
+        # and boxes: a "Place order" link or an "I agree to the terms" box commits as much as a button.
+        if (action.get('type') not in ('click_point', 'press_control', 'choose_menu')
+                or kind not in ('button', 'menu item', 'link', 'checkbox', 'switch')
+                or sum(c.isalpha() for c in label) < 2 or DECLINE.match(label.rsplit('>', 1)[-1].strip()) or self.is_history(action)):
             return False
         app = snapshot.get('app') or {}
         window = str((snapshot.get('window') or {}).get('title', ''))[:120]
@@ -1728,13 +1737,13 @@ class ComputerTask(CompletionChecks, AnswerWriting, Fallbacks):
         # sheet with a card-number field is up, is another question (review).
         fields = sum(1 for t in snapshot.get('targets') or [] if isinstance(t, dict) and not t.get('file_item')
                      and t.get('role') in ('AXTextField', 'AXTextArea', 'AXComboBox', 'AXCheckBox'))
-        key = (app.get('bundle_id'), window, label.casefold(), fields > 0)
+        key = (app.get('bundle_id'), window if kind != 'link' else '', label.casefold(), fields > 0)  # a link's name is enough
         known = getattr(self, 'commit_checks', {})
         started, asked = time.monotonic(), key not in known
         if asked:
             try:
                 reply = provider.complete_structured(COMMIT_SYSTEM, [{'role': 'user', 'content': json.dumps(
-                    {'button': label[:80], 'app': app.get('name', ''), 'window': window, 'form_fields_on_screen': fields > 0}, ensure_ascii=False)}],
+                    {'button': label[:80], 'kind': kind, 'app': app.get('name', ''), 'window': window, 'form_fields_on_screen': fields > 0}, ensure_ascii=False)}],
                     schema=COMMIT_SCHEMA, max_tokens=24, thinking=False, **cancel_kwargs)
             except (RuntimeError, ValueError, OSError, TypeError):
                 if self.cancelled.is_set():
@@ -2085,6 +2094,50 @@ class ComputerTask(CompletionChecks, AnswerWriting, Fallbacks):
             return dict(step,action=dict(action,click_count=2))
         return step
 
+    def vet_proposal(self, raw, marks, desktop, snapshot, visual, regions, image_data, provider, cancel_kwargs, check_active):
+        """(step, raw) for one proposed step, from the image step or the choose step alike: tools expanded,
+        a numbered target resolved to its centre, the step validated, and the loop/repeat guards applied.
+        Raises ValidationError; self.unchanged_action says whether it was the same action on an unchanged screen."""
+        self.unchanged_action = False
+        self.undo_refused = None
+        self.next_queue = []
+        raw = self.expand_tool(raw, marks, snapshot)
+        numbered = isinstance(raw, dict) and isinstance(raw.get('action'), dict) and raw['action'].get('type') in ('click_target','open_target')
+        raw = resolve_target(raw, marks)
+        step = validate_step(raw, desktop, snapshot, goal_mode=self.goal_mode, screen=visual.get('screen'), snap=not numbered,
+                             text_regions=regions, catalog=self._catalog or (), goal=self.goal)
+        step = self.file_interaction(step, marks, provider, cancel_kwargs, snapshot)
+        check_active()
+        if not numbered:  # a numbered target is on screen by definition
+            step = self.scroll_for_unseen(step, desktop, snapshot, regions, visual)
+        step = self.app_click(step, desktop, snapshot, visual)
+        step = self.address_typed(step, desktop, snapshot)
+        if step['status'] == 'action' and step['action']['type'] == 'type_text' and self.goal_mode != 'inspect' and already_typed(step['action'].get('text', ''), getattr(self, 'typed', [])):
+            # The shopping list was typed, then typed again five times (live, v2): the model doesn't see it worked.
+            raise ValidationError('That text is already typed in this task. If the goal is done, report status=done; '
+                                  'otherwise type only what is still missing.')
+        if step['status'] == 'action':
+            self.repeat_check(step['action'])
+        if step['status'] == 'action' and self.cycled(step['action']):
+            # Calculator: Show Sidebar, Hide Sidebar, Show Sidebar… (owner, live held-out). Whatever the
+            # buttons are called: the same click on a screen this task already left by that click.
+            raise ValidationError('You already clicked “'+step['action'].get('label', '')+'” on this same screen earlier, and it led '
+                                  'back here. Do not repeat the cycle: if the screen shows what the goal asks for, report status=done '
+                                  'and quote it; otherwise choose something different.')
+        if step['status'] == 'action' and self.repeats(step['action']) >= 2:
+            raise ValidationError('“'+step['action'].get('label', step['action']['type'])+'” already ran twice in a row and the goal '
+                'did not progress. Do not repeat it. If the current screen already shows the requested information, '
+                'report it with status=done and quote the evidence; otherwise choose a different target.')
+        if step['status'] == 'action' and self.receipts and step['action']['type'] != 'wait':
+            signature = (hashlib.sha256(image_data.encode()).hexdigest(), self.scroll_seen,
+                         json.dumps(raw['action'], sort_keys=True))
+            if self.last_proposal == signature:
+                self.unchanged_action = True
+                raise ValidationError('The same action was already submitted on this unchanged screen without observed progress. '
+                                      'Choose another useful authorized method. Only report done if the FULL goal has current evidence; '
+                                      'a target being absent is not completion.')
+        return step, raw
+
     def note_values(self, message, regions):
         """Requested values the step model read off this screen while it moves on: "The adult ticket is
         £11.60. Now the car park." The line holding that value is kept like a verified finding, so the
@@ -2416,7 +2469,12 @@ class ComputerTask(CompletionChecks, AnswerWriting, Fallbacks):
         correction = None
         control_ids = [] if marks else [c['id'] for c in snapshot.get('controls') or [] if isinstance(c, dict) and c.get('id') and c.get('enabled', True)]
         target_ids = [m['id'] for m in marks]
-        for attempt in range(2):
+        # Code lists what can be done here and the text model only chooses (task_choices); the image
+        # step below runs only when that list is empty, all that fits was tried, or nothing fits.
+        chosen = self.choose_step(desktop, snapshot, regions, visual, image_data, marks, provider, cancel_kwargs, check_active, stages)
+        if chosen is not None:
+            step, raw, marks, snapshot = chosen
+        for attempt in range(2 if chosen is None else 0):
             check_active()
             if attempt and progress:
                 progress('Double-checking…')
@@ -2451,47 +2509,10 @@ class ComputerTask(CompletionChecks, AnswerWriting, Fallbacks):
                 # re-checks the target in any case.
                 desktop.collect_once(targets=True)
                 snapshot = dict(desktop.context(), targets=snapshot.get('targets'))
-            unchanged_action = False
-            self.undo_refused = None
             try:
-                self.next_queue = []
-                raw = self.expand_tool(raw, marks, snapshot)
-                numbered = isinstance(raw, dict) and isinstance(raw.get('action'), dict) and raw['action'].get('type') in ('click_target','open_target')
-                raw = resolve_target(raw, marks)
-                step = validate_step(raw, desktop, snapshot, goal_mode=self.goal_mode, screen=visual.get('screen'), snap=not numbered,
-                                     text_regions=regions, catalog=self._catalog or (), goal=self.goal)
-                step = self.file_interaction(step, marks, provider, cancel_kwargs, snapshot)
-                check_active()
-                if not numbered:  # a numbered target is on screen by definition
-                    step = self.scroll_for_unseen(step, desktop, snapshot, regions, visual)
-                step = self.app_click(step, desktop, snapshot, visual)
-                step = self.address_typed(step, desktop, snapshot)
-                if step['status'] == 'action' and step['action']['type'] == 'type_text' and self.goal_mode != 'inspect' and already_typed(step['action'].get('text', ''), getattr(self, 'typed', [])):
-                    # The shopping list was typed, then typed again five times (live, v2): the model doesn't see it worked.
-                    raise ValidationError('That text is already typed in this task. If the goal is done, report status=done; '
-                                          'otherwise type only what is still missing.')
-                if step['status'] == 'action':
-                    self.repeat_check(step['action'])
-                if step['status'] == 'action' and self.cycled(step['action']):
-                    # Calculator: Show Sidebar, Hide Sidebar, Show Sidebar… (owner, live held-out). Whatever the
-                    # buttons are called: the same click on a screen this task already left by that click.
-                    raise ValidationError('You already clicked “'+step['action'].get('label', '')+'” on this same screen earlier, and it led '
-                                          'back here. Do not repeat the cycle: if the screen shows what the goal asks for, report status=done '
-                                          'and quote it; otherwise choose something different.')
-                if step['status'] == 'action' and self.repeats(step['action']) >= 2:
-                    raise ValidationError('“'+step['action'].get('label', step['action']['type'])+'” already ran twice in a row and the goal '
-                        'did not progress. Do not repeat it. If the current screen already shows the requested information, '
-                        'report it with status=done and quote the evidence; otherwise choose a different target.')
-                if step['status'] == 'action' and self.receipts and step['action']['type'] != 'wait':
-                    import hashlib
-                    signature = (hashlib.sha256(image_data.encode()).hexdigest(), self.scroll_seen,
-                                 json.dumps(raw['action'], sort_keys=True))
-                    if self.last_proposal == signature:
-                        unchanged_action = True
-                        raise ValidationError('The same action was already submitted on this unchanged screen without observed progress. '
-                                              'Choose another useful authorized method. Only report done if the FULL goal has current evidence; '
-                                              'a target being absent is not completion.')
+                step, raw = self.vet_proposal(raw, marks, desktop, snapshot, visual, regions, image_data, provider, cancel_kwargs, check_active)
             except ValidationError as error:
+                unchanged_action = self.unchanged_action
                 timing('task.step.invalid', inference_at, step=len(self.receipts)+1, attempt=attempt+1,
                        status_action_mismatch=isinstance(raw, dict) and raw.get('status') in ('done', 'needs_user') and raw.get('action') is not None,
                        action_type=str(((raw.get('action') if isinstance(raw, dict) else None) or {}).get('type', ''))[:20],
@@ -2566,7 +2587,7 @@ class ComputerTask(CompletionChecks, AnswerWriting, Fallbacks):
                     step = {'status': 'needs_user', 'action': None, 'message': 'I could not finish: '+missing[:200]+' is not on the screen.'}
             break
         if step['status'] == 'action':
-            # Two things on screen fit the goal equally: ask which one, before anything runs.
+            # Two things on screen fit the goal equally: ask which one, before anything runs (either step).
             names = [m['label'] for m in marks] if marks else \
                 [r['text'] for r in regions]+[str(c.get('label', '')) for c in snapshot.get('controls') or [] if isinstance(c, dict)]
             seen = {w for text in names+[m['kind'] for m in marks]+[str((snapshot.get('window') or {}).get('title', ''))]
@@ -2607,7 +2628,7 @@ class ComputerTask(CompletionChecks, AnswerWriting, Fallbacks):
         from .eval_control import step_shot
         step_shot(image_data, len(self.receipts)+1, step.get('action'), step['status'], observation=snapshot, screen=visual.get('screen'))
         if step['status'] != 'action':
-            return finish({'status': step['status'], 'message': step['message'], 'action': None}, 'model_terminal')
+            return finish({'status': step['status'], 'message': step['message'], 'action': None}, 'choose_terminal' if chosen else 'model_terminal')
         action, message = step['action'], step['message']
         import hashlib
         signature = (hashlib.sha256(image_data.encode()).hexdigest(), self.scroll_seen,
@@ -2638,4 +2659,4 @@ class ComputerTask(CompletionChecks, AnswerWriting, Fallbacks):
             check_active()
         self.pending_sensitive = bool(sensitive)
         self.note_values(message, regions)
-        return finish({'status': 'action', 'message': message, 'action': action, 'review': review, 'visual_capture': visual}, 'model_action')
+        return finish({'status': 'action', 'message': message, 'action': action, 'review': review, 'visual_capture': visual}, 'choose_action' if chosen else 'model_action')

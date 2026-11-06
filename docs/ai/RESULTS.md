@@ -38,6 +38,19 @@ Reading: dev is now saturated while acceptance barely moves, so the remaining si
 failures are not reachable by fixing dev cases. Next: new, differently shaped dev
 scenarios, or a model limitation (see TRAINING.md). Unit suite 1608 OK.
 
+## Phase 2 (2026-11-06): code-first choose step (Q2) with commit-check safety fixes
+
+| Sim v2 | Before Q2 | Q2 before safety fixes | Final (`sim2-*-q2`) |
+|---|---|---|---|
+| dev pass / fail, fs | 25 / 0, 0 | 25 / 0, 0 | 24 / 1, 0 |
+| acceptance pass / fail, fs | 14 / 11, 3 | 15 / 10, 2 | 14 / 11, 3 |
+| model calls per step (dev / acc) | 2.42 / — | 2.39 / 2.55 | 2.28 / 2.49 |
+
+Choose call: ~670 prompt tokens, 0.56 s, versus ~3,700 tokens, 3.0 s for the image step;
+image calls per step 0.93 → 0.29 on dev. Unauthorized actions 0 throughout. The final
+run's one-task differences are within the run-to-run variation seen on dev (23–25/25).
+Accuracy on unfamiliar screens is limited by the 4B model's choices. Unit suite 1681 OK.
+
 ## Unit suite
 
 | Date | Tree | Result |

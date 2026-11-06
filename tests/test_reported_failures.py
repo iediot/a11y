@@ -960,7 +960,7 @@ class ScreenTargetTests(Harness):
         self.assertEqual((step['action']['type'], step['action']['label']), ('click_point', '19 comments'))
         self.assertEqual((step['action']['x'], step['action']['y']), (.41, round(150/700, 4)))
         self.assertIn('capture_guard', step['action'])
-        call = self.provider.complete_structured.call_args
+        call = next(c for c in self.provider.complete_structured.call_args_list if c.args[0] == SYSTEM)  # (the commit check follows for a link)
         prompt = call.args[1][1]['content']  # the observation; the goal is in the cached first message
         self.assertIn('t1|link|19 comments', prompt)
         self.assertNotIn('controls', json.loads(prompt)['desktop'])  # the same things, listed once
@@ -1207,6 +1207,12 @@ class TaskToolTests(Harness):
     def model(self, action):
         self.provider.complete_structured.return_value = {'status': 'action', 'message': 'Go.', 'risk': 'navigation', 'action': action}
 
+    def commit_answer(self, effect):
+        """The step reply as before; the commit check (now also asked about menu commands) answers effect."""
+        from companion.computer_task import COMMIT_SYSTEM
+        step = self.provider.complete_structured.return_value
+        self.provider.complete_structured.side_effect = lambda system, *a, **k: {'effect': effect} if system == COMMIT_SYSTEM else step
+
     def test_search_in_app_clicks_the_field_then_types_and_presses_enter_without_the_model(self):
         task = ComputerTask('on Wikipedia, search for Bucharest', automatic=True, goal_mode='inspect')
         self.model({'type': 'search_in_app', 'query': 'Bucharest'})
@@ -1233,10 +1239,12 @@ class TaskToolTests(Harness):
 
     def test_menus_are_chosen_by_title_and_risky_items_wait(self):
         self.model({'type': 'choose_menu', 'path': 'View > as List'})
+        self.commit_answer('navigate')
         step = self.propose(ComputerTask('show the files as a list', automatic=True, goal_mode='inspect'))
         self.assertEqual((step['action']['type'], step['action']['path']), ('choose_menu', 'View > as List'))
         self.assertFalse(step['review'])
         self.model({'type': 'choose_menu', 'path': 'Finder > Empty Bin…'})
+        self.commit_answer('navigate')   # MENU_CHANGES alone still makes it wait
         self.assertTrue(self.propose(ComputerTask('empty the bin', automatic=True, goal_mode='change'))['review'])
 
 
@@ -1903,7 +1911,7 @@ class WindowlessAppTests(unittest.TestCase):
         with patch('companion.computer_task.validate_step', side_effect=lambda raw, *a, **k: {'action': raw['action']}):
             step = task.menu_pick_step(desktop, {'app': {'bundle_id': 'com.apple.Safari', 'name': 'Safari'}}, provider, {})
         self.assertEqual(step['action'], {'type': 'choose_menu', 'path': 'History > Show All History'})
-        offered = provider.complete_structured.call_args.kwargs['schema']['properties']['command']['enum']
+        offered = provider.complete_structured.call_args_list[0].kwargs['schema']['properties']['command']['enum']  # then the commit check
         self.assertEqual(offered, ['none', 'History > Show All History', 'History > Home'])  # nothing that clears, closes or lists pages
         self.assertIsNone(task.menu_pick_step(desktop, {'app': {'bundle_id': 'com.apple.Safari'}}, provider, {}))  # once per task
         provider.complete_structured.return_value = {'command': 'none'}

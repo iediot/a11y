@@ -19,7 +19,7 @@ import time
 import unittest
 from unittest.mock import Mock, patch
 
-from companion.computer_task import (ComputerTask, SYSTEM, MET_SYSTEM, ANSWER_SYSTEM, COMMIT_SYSTEM, FILE_INTERACTION_SYSTEM,
+from companion.computer_task import (ComputerTask, SYSTEM, CHOOSE_SYSTEM, MET_SYSTEM, ANSWER_SYSTEM, COMMIT_SYSTEM, FILE_INTERACTION_SYSTEM,
                                      FILE_INTERACTION_SCHEMA, check_proven, completion_evidence, completion_result, completion_schema,
                                      region_look, screen_signature, unproven_parts)
 from companion.desktop_context import DesktopContext
@@ -90,6 +90,10 @@ class Scripted:
             return deepcopy(self.commit)
         if system == FILE_INTERACTION_SYSTEM:
             return {'goal_verb': '', 'interaction': 'other'}
+        if system == CHOOSE_SYSTEM:
+            # A provider with plan_task also gets the choose step (task_choices); "none" leaves the step
+            # to the scripted image replies these tests are about.
+            return {'note': '', 'step': 'none', 'text': ''}
         raise AssertionError('unexpected model stage: '+system[:50])
 
 
@@ -529,17 +533,32 @@ class CommitsAreConfirmed(Loop):
         self.assertIs(self.propose(task)['review'], False)
         self.assertEqual(len(self.provider.commit_inputs), 1)   # the answer for this button is kept
 
-    def test_links_fields_back_and_decline_buttons_are_never_asked_about(self):
+    def test_fields_back_and_decline_buttons_are_never_asked_about(self):
+        # Changed 2026-11-06 (Q2 review): links and checkboxes left this list. A "Place order" link and an
+        # "I agree to the terms" box commit as much as a button, so they get the same check (next test).
         self.provider.commit = {'effect': 'commit'}
-        for label, role, target_id in (('Delivery information', 'AXLink', 't2'), ('Back', 'AXButton', 't1'), ('Not now', 'AXButton', 't1'),
-                                       ('Gift note', 'AXTextField', 't1'), ('Gift wrap', 'AXCheckBox', 't1')):
+        for label, role in (('Back', 'AXButton'), ('Not now', 'AXButton'), ('Gift note', 'AXTextField')):
             with self.subTest(label=label):
-                task = self.checkout(label if target_id == 't1' else 'Place order', role if target_id == 't1' else 'AXButton')
-                self.provider.steps = [click(target_id)]
+                task = self.checkout(label, role)
+                self.provider.steps = [click('t1')]
                 step = self.propose(task)
                 self.assertEqual(step['action']['label'], label)
                 self.assertIs(step['review'], False)
         self.assertEqual(self.provider.commit_inputs, [])
+
+    def test_links_and_boxes_get_the_commit_check(self):
+        for label, role, target_id, effect, review in (('Delivery information', 'AXLink', 't2', 'navigate', False),
+                                                       ('Place order', 'AXLink', 't1', 'commit', True),
+                                                       ('Gift wrap', 'AXCheckBox', 't1', 'navigate', False),
+                                                       ('I agree to the terms and conditions', 'AXCheckBox', 't1', 'commit', True)):
+            with self.subTest(label=label):
+                self.provider.commit, self.provider.commit_inputs = {'effect': effect}, []
+                task = self.checkout(label if target_id == 't1' else 'Place order', role if target_id == 't1' else 'AXButton')
+                self.provider.steps = [click(target_id)]
+                step = self.propose(task)
+                self.assertEqual(step['action']['label'], label)
+                self.assertIs(step['review'], review)
+                self.assertEqual(self.provider.commit_inputs[0]['button'], label)
 
     def test_a_step_already_marked_as_a_change_costs_no_extra_call(self):
         task = self.checkout()

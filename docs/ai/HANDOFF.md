@@ -60,3 +60,12 @@ round 2 are reviewed once (request) / not yet reviewed (task loop round 2).
 Disk: unused Ollama models and fine-tune intermediates were deleted on 2026-11-06
 (installed: qwen3:4b-instruct, qwen3-vl:4b-instruct, qwen3-vl:2b-instruct). Quantized
 router candidates and adapters remain under `.data/`.
+
+## Model exploration (paused by owner, 2026-11-06)
+
+- colibri (disk-streaming MoE engine): its macOS build has no Metal support for the
+  qwen36 engine; CPU-only (~6 tok/s published), needs Homebrew libomp, wants ~30 GB RAM.
+  Rejected for this Mac; trial files deleted.
+- Untested candidate if resumed: an Ollama vision MoE around 30B-A3B (~19-20 GB) replacing
+  both 4B models; the open question is memory pressure on 24 GB.
+- Do not download or test models until the owner resumes this.

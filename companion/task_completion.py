@@ -216,6 +216,10 @@ def check_proven(check, observation, others=()):
     if kind != 'find_out' and quote not in current:
         return False
     if kind == 'go_to':
+        if any(quote == _words(typed) for typed in facts.get('typed') or []):
+            # What this task typed (a search query, shown as a search window's title) is not a place
+            # reached: "Open the Receipts 2027 folder" passed on Finder's search for it (sim).
+            return False
         opened = facts.get('opened_app') or {}
         if quote in {_words(value) for value in opened.values()}:
             return bool(_tokens(opened.get('name', ''))) and all(token in asked for token in _tokens(opened.get('name', '')))
@@ -566,6 +570,9 @@ class CompletionChecks:
         if cache is not None:
             cache[key] = reply
         self.keep_findings(reply, observation)
+        if isinstance(reply, dict):
+            # The parts still open, in the user's words: the choose step ranks options against them.
+            self.open_parts = [] if completion_evidence(reply, observation) else unproven_parts(reply, observation)[:3]
         return observation, reply
 
     def keep_findings(self, reply, observation):

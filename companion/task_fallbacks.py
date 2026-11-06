@@ -31,7 +31,7 @@ class Fallbacks:
         """Once per task: the menu command the goal needs, chosen by the text model from the app's own
         menu items (an enum, never free text). The model only saw menu names, so "where can I see the
         sites I visited? open it" clicked around Safari for 22 steps (live, v2)."""
-        from .computer_task import FULL_SCREEN_MENU, validate_step  # at call time: computer_task imports this module
+        from .computer_task import validate_step  # at call time: computer_task imports this module
         if getattr(self, 'menu_picked', False) or self.queue or self.goal_mode == 'draft' \
                 or any(r.get('type') in ('new_window', 'type_text', 'choose_menu') for r in self.receipts):
             return None  # writing has its own steps: it chose File > New after the new document opened (live)
@@ -59,17 +59,11 @@ class Fallbacks:
             items = bridge.menu_items(app['bundle_id'])
         except (RuntimeError, ValueError, OSError):
             return None
-        commands = []
-        for path in items if isinstance(items, list) else []:
-            leaf = str(path).rsplit('>', 1)[-1].strip()
-            if (isinstance(path, str) and len(path) <= 90 and not MENU_UNSAFE.search(path) and not MENU_CONTENT.search(path)
-                    and not re.search(r'\b(?:find|search)\b', leaf, re.I)  # searching is search_in_app's (Edit > Search in Maps left typing nowhere, live)
-                    and not FULL_SCREEN_MENU.search(path) and not re.search(r' [-–—|] |https?:|\.\w{2,4}\b|…\w', leaf)
-                    and path not in commands):
-                commands.append(path)
+        from .task_choices import menu_commands
+        # (no find/search items: searching is search_in_app's; Edit > Search in Maps left typing nowhere, live)
+        commands = menu_commands(items)
         if not commands:
             return None
-        commands = commands[:250]
         observation = {'goal': self.goal, 'app': app.get('name', ''), 'commands': commands}
         schema = {'type': 'object', 'additionalProperties': False, 'required': ['command'],
                   'properties': {'command': {'enum': ['none']+commands}}}
@@ -87,8 +81,11 @@ class Fallbacks:
                                    goal_mode=self.goal_mode, goal=self.goal)['action']
         except (ValueError, ValidationError):
             return None
+        # A command that commits waits for the user, as a button does (commits: one short cached check).
+        review = not self.automatic or self.commits(action, 'menu item', snapshot, provider, cancel_kwargs)
         self.pending = action
-        return {'status': 'action', 'message': action.get('label', 'Using the menu')+'…', 'action': action, 'review': not self.automatic, 'visual_capture': None}
+        self.pending_sensitive = bool(review and self.automatic)
+        return {'status': 'action', 'message': action.get('label', 'Using the menu')+'…', 'action': action, 'review': review, 'visual_capture': None}
 
     def settings_pane_step(self, desktop, snapshot, provider, cancel_kwargs):
         """Once per task, with System Settings (macOS) or Settings (Windows) in front: open the pane the
