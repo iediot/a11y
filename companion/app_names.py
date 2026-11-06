@@ -53,34 +53,67 @@ def edits(first, second, limit):
     return min(rows[-1][-1], limit+1)
 
 
-def closest_app(name, catalog):
+# Apps holding private conversation, contacts and photos are opened only when named exactly; a near
+# miss ("massages", "contracts", "facetim") is never guessed onto them.
+NEVER_GUESSED = frozenset(('mail', 'messages', 'photos', 'contacts', 'facetime', 'whatsapp', 'teams', 'microsoftteams'))
+NEVER_GUESSED_IDS = frozenset(('com.apple.mail', 'com.apple.MobileSMS', 'com.apple.Photos', 'com.apple.AddressBook',
+                               'com.apple.FaceTime', 'net.whatsapp.WhatsApp', 'com.microsoft.teams', 'com.microsoft.teams2'))
+_DICTIONARY = None
+
+
+def common_word(word):
+    """True when `word` is a correctly spelt English word ("tinder", "review", "motion"), from the
+    system word list (/usr/share/dict/words on macOS). Without one, nothing counts as a word."""
+    global _DICTIONARY
+    if _DICTIONARY is None:
+        try:
+            with open('/usr/share/dict/words', encoding='utf-8', errors='ignore') as handle:
+                _DICTIONARY = frozenset(line.strip().casefold() for line in handle if line.strip())
+        except OSError:
+            _DICTIONARY = frozenset()
+    word = word.casefold()
+    return word in _DICTIONARY or (word.endswith('s') and not word.endswith('ss') and word[:-1] in _DICTIONARY)
+
+
+def closest_app(name, catalog, allow_words=False):
     """The one installed app whose name is a near miss of `name` ("safarie", "calender"), else None.
 
     For opening an app only, after exact names, aliases and known sites found nothing. One edit for
     a name of six letters or more, two from ten; shorter names are not guessed ("mail"/"maps",
     "canva"). The app's whole name counts, or one word of it ("settigns" for System Settings).
-    When two apps are equally near, neither is chosen."""
+    The first letter must match ("tinder" is not Finder), a correctly spelt word is that word, not
+    a typo ("review" is not Preview) unless it is the name's singular or plural ("number" for
+    Numbers), and private apps (NEVER_GUESSED) are never guessed. When two apps are equally near,
+    neither is chosen. `allow_words` is for an app name the model already gave as an app to open
+    ("calender" is also a word, but there it means Calendar)."""
     wanted = normalized(name)
     limit = 2 if len(wanted) >= 10 else 1 if len(wanted) >= 6 else 0
     if not limit:
         return None
+    is_word = common_word(wanted) and not allow_words
     found = {}
     for app in catalog:
         keys = {normalized(app['name'])} | {normalized(word) for word in app['name'].split()}
-        distance = min(edits(wanted, key, limit) for key in keys if key)
+        keys = {key for key in keys if key and key[0] == wanted[0]
+                and (not is_word or wanted in (key+'s', key[:-1] if key.endswith('s') else None))}
+        if not keys:
+            continue
+        distance = min(edits(wanted, key, limit) for key in keys)
         if distance <= limit:
             found[app['bundle_id']] = (distance, app)
     if not found:
         return None
     best = min(distance for distance, _ in found.values())
     nearest = [app for distance, app in found.values() if distance == best]
-    return nearest[0] if len(nearest) == 1 else None
+    private = lambda app: normalized(app['name']) in NEVER_GUESSED or app.get('bundle_id') in NEVER_GUESSED_IDS
+    # Nearest to a private app, or as near to it as to another: not guessed at all.
+    return nearest[0] if len(nearest) == 1 and not private(nearest[0]) else None
 
 
 def launchable(name, catalog):
     """Apps to open for a name: the exact/alias/word matches, else the one near miss."""
     matches = resolve_app(name, catalog)
     if not matches:
-        near = closest_app(name, catalog)
+        near = closest_app(name, catalog, allow_words=True)  # the model named it as an app
         matches = [near] if near else []
     return matches

@@ -23,10 +23,12 @@ benchmark totals into each document.
 - [Experimental GUI models](GUI_MODELS.md)
 - [Router tools](../../scripts/router_README.md)
 - [Arch training history](ARCH_TRAINING_HANDOFF.md)
+- [Legacy live suites inventory](LEGACY_LIVE_SUITES.md)
 
 These may describe older behavior. Check source and the current contract before
 using a command. Legacy `live_*` suites are not an acceptance gate: several grade on
-replies and their default cases touch private apps.
+replies, and the runner refuses cases that name private apps unless
+`--allow-private-apps` is given.
 
 ## Historical records
 

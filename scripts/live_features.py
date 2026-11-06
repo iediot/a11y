@@ -1,4 +1,5 @@
 """Opt-in owner feature checks. Build is pure; native work happens only in callbacks.
+Legacy diagnostic, not an acceptance gate; see docs/ai/TESTING.md
 
 Run only when the owner has handed over the screen: live_eval.py --suite features.
 The eval confirmation policy is unchanged. A pending drag needs the owner.

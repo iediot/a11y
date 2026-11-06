@@ -587,6 +587,15 @@ def prepare(operation, target, *, bridge, browser=None, script=None, runner=None
     raise AppError('That app action is not supported.')
 
 
+# What perform() says when a change was made; anything else is an error message.
+WRITE_DONE = re.compile(r'^(?:Added|Deleted|Marked|Created|Ran) ')
+
+
+def write_succeeded(message):
+    """True when `message` is perform()'s report of a change it made."""
+    return bool(WRITE_DONE.match(message or ''))
+
+
 def perform(action, *, bridge, script=None, runner=None):
     """Run a change the user confirmed; returns what to tell them."""
     script, runner = script or run_script, runner or subprocess.run

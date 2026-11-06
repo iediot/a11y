@@ -31,7 +31,7 @@ FRIDAY = datetime(2026, 11, 6, 9, 20)
 class NearMissAppNameTests(unittest.TestCase):
     def test_a_misspelt_installed_app_is_that_app(self):
         self.assertEqual(closest_app('safarie', CATALOG)['name'], 'Safari')
-        self.assertEqual(closest_app('calender', CATALOG)['name'], 'Calendar')
+        self.assertEqual(closest_app('calendr', CATALOG)['name'], 'Calendar')
         self.assertEqual(closest_app('calcualtor', CATALOG)['name'], 'Calculator')
         self.assertEqual(closest_app('settigns', CATALOG)['name'], 'System Settings')  # one word of the name
 
@@ -44,7 +44,7 @@ class NearMissAppNameTests(unittest.TestCase):
 
     def test_quick_open_opens_the_near_miss_instead_of_searching_for_it(self):
         self.assertEqual(quick_plan('open safarie', CATALOG)['operation'], 'launch_app')
-        self.assertEqual(quick_plan('open calender', CATALOG)['app_name'], 'Calendar')
+        self.assertEqual(quick_plan('open calendr', CATALOG)['app_name'], 'Calendar')
         self.assertEqual(quick_plan('open photoshop', CATALOG)['operation'], 'browser_search')
         self.assertEqual(quick_plan('go to slack instead', CATALOG), {'operation': 'launch_app', 'app_name': 'Slack', 'target': '',
                                                                       'browser_mode': 'default', 'remaining_request': ''})
@@ -157,9 +157,18 @@ class PlainOpenTests(RoutingFixture):
         self.assertEqual((action['bundle_id'], action['browser_mode']), ('com.google.Chrome', 'window'))  # asked for, kept
 
     def test_a_misspelt_app_is_opened_without_a_model_call(self):
-        response = self.app.ask('open calender')
-        self.assertEqual(response['desktop_action']['bundle_id'], 'com.apple.iCal')
+        response = self.app.ask('open safarie')
+        self.assertEqual(response['desktop_action']['bundle_id'], 'com.apple.Safari')
         self.provider.interpret_request.assert_not_called()
+
+    def test_a_real_word_near_an_app_name_is_left_to_the_model(self):
+        # "calender" is a dictionary word (review 2026-11-06: code no longer guesses a correctly spelt
+        # word is a typo). The model names it as an app to open; then the near miss is that app.
+        with patch('companion.app_names._DICTIONARY', frozenset({'calender'})):
+            self.route('launch_app', app_name='calender', acts_on_computer=True, referent='destination')
+            response = self.app.ask('open calender')
+        self.provider.interpret_request.assert_called_once()
+        self.assertEqual(response['desktop_action']['bundle_id'], 'com.apple.iCal')
 
 
 class PendingProposalTests(RoutingFixture):
@@ -223,6 +232,165 @@ class FocusVerifyTests(RoutingFixture):
         self.provider.complete_structured.assert_not_called()
         self.app.desktop_context.bridge.app_state.return_value = {'running': True, 'active': False}
         self.assertIn('not in front yet', self.app.ask('switch to finder', mode='verify')['message'])
+
+
+WEDNESDAY = datetime(2026, 11, 4, 10, 0)
+APPS = [{'name': name, 'bundle_id': bundle} for name, bundle in (
+    ('Finder', 'com.apple.finder'), ('Preview', 'com.apple.Preview'), ('Weather', 'com.apple.weather'), ('Notion', 'notion.id'),
+    ('Contacts', 'com.apple.AddressBook'), ('Messages', 'com.apple.MobileSMS'), ('FaceTime', 'com.apple.FaceTime'),
+    ('Numbers', 'com.apple.iWork.Numbers'), ('Reminders', 'com.apple.reminders'), ('Safari', 'com.apple.Safari'))]
+WORDS = frozenset('tinder binder review feather leather motion contract contact massage number remainder calender'.split())
+
+
+class StatedDayReviewTests(unittest.TestCase):
+    """Review of 0038b56: the code's day replaced dates the model had right."""
+    def when(self, model, request, now=FRIDAY):
+        return upcoming(stated_day(stated_time(model, request, now), request, now), request, now)
+
+    def test_a_relative_phrase_or_explicit_date_keeps_the_models_date(self):
+        self.assertEqual(self.when('2026-11-08T09:00', 'remind me the day after tomorrow at 9am to pay rent'), '2026-11-08T09:00')
+        self.assertEqual(self.when('2026-11-16T09:00', 'remind me a week from monday at 9am'), '2026-11-16T09:00')
+        self.assertEqual(self.when('2026-11-13T10:00', 'remind me friday next week at 10am', WEDNESDAY), '2026-11-13T10:00')
+        self.assertEqual(self.when('2026-11-16T09:00', 'remind me on monday the 16th at 9am'), '2026-11-16T09:00')
+        self.assertEqual(self.when('2026-11-16T09:00', 'remind me on 16 november, a monday, at 9am'), '2026-11-16T09:00')
+
+    def test_a_day_in_the_title_or_two_day_words_keep_the_models_date(self):
+        self.assertEqual(self.when('2026-11-05T17:00', "remind me to plan friday's party tomorrow at 5pm", WEDNESDAY), '2026-11-05T17:00')
+        self.assertEqual(self.when('2026-11-07T15:00', 'remind me tomorrow to cancel the monday meeting at 3pm'), '2026-11-07T15:00')
+        self.assertEqual(self.when('2026-11-05T17:00', "remind me about friday's party at 5pm", WEDNESDAY), '2026-11-05T17:00')
+
+    def test_next_weekday_is_never_this_weeks(self):
+        self.assertEqual(self.when('2026-11-13T10:00', 'next friday at 10am dentist', WEDNESDAY), '2026-11-13T10:00')
+        self.assertEqual(self.when('2026-11-06T10:00', 'next friday at 10am dentist', WEDNESDAY), '2026-11-13T10:00')  # model wrong
+        self.assertEqual(self.when('2026-11-06T10:00', 'this friday at 10am dentist', WEDNESDAY), '2026-11-06T10:00')
+
+    def test_a_weekday_named_today_whose_time_has_passed_is_a_week_on(self):
+        self.assertEqual(self.when('2026-11-06T09:00', 'remind me friday at 9', datetime(2026, 11, 6, 10, 0)), '2026-11-13T09:00')
+        self.assertEqual(self.when('2026-11-06T11:00', 'remind me friday at 11', datetime(2026, 11, 6, 10, 0)), '2026-11-06T11:00')
+
+    def test_midnight_ends_the_named_day(self):
+        ten = datetime(2026, 11, 6, 10, 0)
+        self.assertEqual(self.when('2026-11-07T00:00', 'remind me tonight at midnight to lock up', ten), '2026-11-07T00:00')
+        self.assertEqual(self.when('2026-11-06T00:00', 'remind me tonight at midnight to lock up', ten), '2026-11-07T00:00')
+        self.assertEqual(self.when('2026-11-06T22:00', 'remind me at midnight to lock up', ten), '2026-11-07T00:00')
+        self.assertEqual(self.when('2026-11-07T00:00', 'remind me friday at midnight', WEDNESDAY), '2026-11-07T00:00')
+        self.assertEqual(self.when('2026-11-06T00:00', 'remind me friday at midnight', WEDNESDAY), '2026-11-07T00:00')
+        self.assertEqual(self.when('2026-11-07T00:00', 'remind me at 12 am to take pills', ten), '2026-11-07T00:00')
+        self.assertEqual(self.when('2026-11-06T09:00', 'remind me at noon to eat', ten), '2026-11-06T12:00')
+        self.assertEqual(self.when('2026-11-20T12:00', 'remind me on the 20th at midnight', ten), '2026-11-21T00:00')
+
+    def test_two_stated_times_leave_the_models_time(self):
+        self.assertEqual(self.when('2026-11-07T15:00', 'lunch at noon then call at 3pm tomorrow'), '2026-11-07T15:00')
+        self.assertEqual(self.when('2026-11-07T17:00', 'remind me at 5 to move the 3pm meeting to 4pm'), '2026-11-07T17:00')
+
+
+class FuzzyAppReviewTests(unittest.TestCase):
+    """Review of 0038b56: real words opened the wrong app, and private apps became reachable."""
+    def setUp(self):
+        patcher = patch('companion.app_names._DICTIONARY', WORDS)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_real_words_and_other_first_letters_are_not_apps(self):
+        for word in ('tinder', 'binder', 'review', 'feather', 'leather', 'motion', 'remainders'):
+            self.assertIsNone(closest_app(word, APPS), word)
+            plan = quick_plan('open '+word, APPS)
+            self.assertFalse(plan and plan['operation'] == 'launch_app', (word, plan))
+
+    def test_private_apps_are_never_guessed(self):
+        for word in ('contact', 'contracts', 'massages', 'messager', 'mesages', 'facetim', 'facetimes'):
+            self.assertIsNone(closest_app(word, APPS), word)
+            self.assertIsNone(closest_app(word, APPS, allow_words=True), word)
+            plan = quick_plan('open '+word, APPS)
+            self.assertNotIn((plan or {}).get('app_name'), ('Contacts', 'Messages', 'FaceTime'), word)
+        self.assertEqual(launchable('Messages', APPS)[0]['name'], 'Messages')  # named exactly, it opens
+
+    def test_typos_and_plurals_still_open_the_app(self):
+        self.assertEqual(closest_app('numbers', APPS), None)  # exact names are resolve_app's
+        self.assertEqual(closest_app('number', APPS)['name'], 'Numbers')
+        self.assertIsNone(closest_app('safri', APPS))  # five letters: too short to guess
+        self.assertEqual(closest_app('safarie', APPS)['name'], 'Safari')
+        self.assertEqual(closest_app('reminderss', APPS)['name'], 'Reminders')
+        self.assertEqual(launchable('feather', APPS), [])  # even from the model, Weather starts with W
+
+    def test_without_a_word_list_the_first_letter_still_decides(self):
+        with patch('companion.app_names._DICTIONARY', frozenset()):
+            self.assertIsNone(closest_app('tinder', APPS))
+            self.assertIsNone(closest_app('review', APPS))
+            self.assertEqual(closest_app('calender', CATALOG)['name'], 'Calendar')
+
+
+class BeyondAppNameReviewTests(RoutingFixture):
+    """Review of 0038b56: with no router target, the rest of the request was dropped."""
+    def test_content_words_around_the_app_keep_the_work(self):
+        for request, app in (('open bluetooth settings', 'System Settings'), ('go to the wifi settings', 'System Settings'),
+                             ('open a private safari window', 'Safari'), ('open incognito chrome', 'Google Chrome'),
+                             ("open yesterday's photos", 'Photos'), ('draft my resume, open pages', 'Pages')):
+            self.route('launch_app', app_name=app, acts_on_computer=True, referent='destination')
+            plan = self.app.prepare_request(request)
+            self.assertEqual(plan['operation'], 'computer_task', request)
+            self.assertEqual(plan['target'], request)  # the whole request is the task's goal
+
+    def test_the_app_as_the_place_or_a_picked_target_is_more_than_an_open(self):
+        self.assertTrue(Companion.beyond_app_name('open it in preview', 'Preview'))
+        self.assertFalse(Companion.beyond_app_name('open preview', 'Preview'))
+        self.assertFalse(Companion.beyond_app_name('open calender', 'Calendar'))  # misheard, still the name (dev eval)
+        self.assertTrue(Companion.beyond_app_name('open calender settings', 'Calendar'))
+        self.assertTrue(Companion.beyond_app_name('open slack', 'Slack', 'general channel'))
+        self.assertFalse(Companion.beyond_app_name('open slack', 'Slack', 'Slack'))
+
+
+class RemindersReviewTests(unittest.TestCase):
+    def test_several_described_matches_are_not_one(self):
+        items = [{'title': 'Book the dentist', 'id': 'r1'}, {'title': 'Call the dentist back', 'id': 'r2'}]
+        self.assertIsNone(mac_apps.best_match('dentist reminder', items, lambda item: item['title']))
+
+    def test_reminders_not_due_today_are_counted(self):
+        bridge = Mock()
+        today = datetime(2026, 11, 6, 15, 0).timestamp()
+        bridge.reminders.return_value = [{'title': 'Book the dentist', 'id': 'r1', 'due': today},
+                                         {'title': 'Order printer ink', 'id': 'r2'}, {'title': 'Renew passport', 'id': 'r3'}]
+        reply = mac_apps.read_reminders(bridge, 'today', FRIDAY)
+        self.assertIn('Book the dentist', reply)
+        self.assertNotIn('Order printer ink', reply)
+        self.assertTrue(reply.endswith('2 more are not due today.'), reply)
+
+
+class ProposalOutcomeReviewTests(PendingProposalTests):
+    """Review of 0038b56: a failed write was reported as confirmed, and a pending reply went unchecked."""
+    def test_a_failed_write_is_not_reported_as_confirmed(self):
+        self.propose_reminder()
+        label = self.app.proposed['offered']
+        self.app.store.add_exchange(self.app.identity, label, 'I couldn’t do that. Reminders did not answer.')
+        self.route('answer', reply='Sure.', acts_on_computer=False, referent='other')
+        self.app.ask('thanks')
+        context = self.provider.interpret_request.call_args.kwargs['context']
+        self.assertNotIn('last_confirmed_action', context)
+        self.assertNotIn('pending_proposal', context)
+
+    def test_follow_up_rewriting_waits_only_while_the_proposal_is_pending(self):
+        self.propose_reminder()
+        self.app.last_task = 'remind me to water the plants at 7pm'
+        self.provider.complete_structured.reset_mock()
+        self.provider.complete_structured.return_value = {'request': 'remind me to water the plants at 8pm'}
+        self.assertEqual(self.app.resolve_follow_up('same at 8pm'), 'same at 8pm')  # pending: the router sees the button
+        self.provider.complete_structured.assert_not_called()
+        self.app.store.add_exchange(self.app.identity, self.app.proposed['offered'], 'Added the reminder to Reminders.')
+        self.assertEqual(self.app.resolve_follow_up('same at 8pm'), 'remind me to water the plants at 8pm')
+
+    def test_a_reply_claiming_completion_while_pending_is_checked(self):
+        self.propose_reminder()
+        self.route('answer', reply='Done, I added the reminder.', acts_on_computer=False, referent='other')
+        self.provider.complete_structured.return_value = {'message': 'It is waiting for you to confirm it below.'}
+        response = self.app.ask('is it in?')
+        self.assertEqual(response['message'], 'It is waiting for you to confirm it below.')
+        self.assertIsNone(response['desktop_action'])
+        self.propose_reminder()
+        self.route('answer', reply='All done, saved it.', acts_on_computer=False, referent='other')
+        self.provider.complete_structured.return_value = {'message': 'Done, I added the reminder.'}
+        response = self.app.ask('ok great')
+        self.assertIn('Nothing has been changed yet', response['message'])
+        self.app.desktop_context.bridge.reminders.assert_not_called()
 
 
 if __name__ == '__main__':

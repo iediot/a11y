@@ -245,6 +245,7 @@ def check_proven(check, observation, others=()):
         return quote in {_words(value) for value in chosen if value}
     if kind == 'change':
         state = list(facts.get('selected_controls') or [])+list(facts.get('typed') or [])
+        state.append((facts.get('after_confirmed_step') or {}).get('evidence', ''))
         for change in facts.get('controls_changed') or []:
             state.extend(change.values())
         state.extend(str((facts.get('focused') or {}).get(key, '')) for key in ('value', 'text'))
@@ -281,13 +282,89 @@ def uncovered_names(reply, observation):
     return missing[:4]
 
 
+# Words that carry no requested result of their own ("tell me what…", "make sure the…"): a clause made
+# only of these needs no part of its own. Grammar words, not task phrases.
+FUNCTION_WORDS = frozenset('''the a an of to in on at for with by from into onto and or but it its this that these those there here
+me my mine you your i we our us they them their he she his her is are was were be been being do does did can could would should
+will shall may might must have has had get got make sure please also just then what which who whom whose when where why how much
+many some any all each every one ones thing things tell show give let know find see look need want about inside within out up down
+over under after before as so than too very not no off its it's what's'''.split())
+# Where one clause of a request ends and the next begins, inside a sentence: "…, and then…", "… then…", "… and…".
+CLAUSE_BREAK = re.compile(r',?\s+(?:and\s+then|then|and|also)\s+', re.I)
+
+
+def _same_word(a, b):
+    """One word is the other, or one starts the other and the shorter has 4+ letters ("date"/"dates",
+    "deliver"/"delivery"; not "court"/"courses")."""
+    short, long = sorted((a, b), key=len)
+    return a == b or len(short) >= 4 and long.startswith(short)
+
+
+def uncovered_clauses(reply, observation):
+    """Clauses the goal joins on ("… and tick the box about due dates") that no listed part mentions in
+    any of its words. A clause without a name escapes uncovered_names, and a verifier that lists only
+    the first clause would otherwise prove the goal with it. Only a clause after "and"/"then" inside a
+    sentence is checked (the first is the one every list starts with), never one that says "not", and
+    only while the list could hold every clause (at most four parts)."""
+    goal = str(observation.get('goal', '')).replace('’', "'")
+    checks = reply.get('checks') if isinstance(reply, dict) else None
+    if not goal or not isinstance(checks, list):
+        return []
+    clauses = []
+    for sentence in re.split(r'(?<=[.!?;:])\s+', goal):
+        clauses += [piece.strip(' .!?;:') for piece in CLAUSE_BREAK.split(sentence)[1:]]
+    if not clauses or len(clauses) > 3:
+        return []
+    covered = {token for item in checks if isinstance(item, dict) for token in _tokens(item.get('part', ''))}
+    facts = observation.get('facts') or {}
+    covered |= {token for value in (observation.get('app', ''), observation.get('window', ''), facts.get('url', ''))
+                for token in _tokens(re.sub(r"[^\w']+", ' ', str(value)))}
+    missing = []
+    for clause in clauses:
+        words = [token for token in _tokens(clause) if len(token) >= 3 and token not in FUNCTION_WORDS]
+        if words and not _negated(clause) and not any(_same_word(word, token) for word in words for token in covered):
+            missing.append(clause[:60])
+    return missing
+
+
 def unproven_parts(reply, observation):
     """What stands between this reply and done, in the user's words: the required parts without
-    acceptable proof, and names in the goal that no part covers."""
+    acceptable proof, and names or joined clauses in the goal that no part covers."""
     checks = required_checks(reply, observation) or []
     parts = [' '.join(str(check.get('part', '')).split())[:80] or 'a requested result'
              for check in checks if not check_proven(check, observation, checks)]
-    return parts+['the part of the goal about “'+name+'”' for name in uncovered_names(reply, observation)]
+    return (parts+['the part of the goal about “'+name+'”' for name in uncovered_names(reply, observation)]
+            + [clause for clause in uncovered_clauses(reply, observation) if clause not in parts])
+
+
+QUESTION = re.compile(r"\b(?:what|which|when|who|whom|where|how|whether|if)\b|\?", re.I)
+
+
+def credit_confirmed(reply, observation):
+    """A change the user confirmed, that ran, and that visibly took effect is that change's proof.
+
+    "Get rid of this draft claim": the user confirmed "Delete draft", the button went away and
+    "Draft deleted." appeared, and the verifier still marked the part as not shown (sim, a missed
+    success). Code credits an unshown part that asks no question only when its words name the confirmed control
+    (a word in common) and facts.after_confirmed_step records the effect (completion_observation:
+    new lines on screen, and the control itself no longer there). Nothing else is credited."""
+    effect = (observation.get('facts') or {}).get('after_confirmed_step') or {}
+    checks = reply.get('checks') if isinstance(reply, dict) else None
+    if not effect.get('evidence') or not isinstance(checks, list):
+        return reply
+    named = [token for token in _tokens(effect.get('step', '')) if len(token) >= 3 and token not in FUNCTION_WORDS]
+    credited = []
+    for check in checks:
+        # The part's kind is not trusted here: "get rid of this draft claim" came back as find_out (sim).
+        # A part that asks a question is information, which a confirmed press does not give.
+        if (isinstance(check, dict) and check.get('shown') is not True and check.get('part_kind') in ('change', 'find_out', 'go_to')
+                and not _negated(check.get('part', '')) and not QUESTION.search(str(check.get('part', '')))
+                and any(_same_word(word, token) for word in named for token in _tokens(check.get('part', '')))):
+            check = dict(check, shown=True, quote=effect['evidence'])
+        credited.append(check)
+    timing('task.credit_confirmed', time.monotonic(), kinds=[str(c.get('part_kind')) for c in checks if isinstance(c, dict)],
+           credited=credited != checks)
+    return completion_result(dict(reply, checks=credited, missing='')) if credited != checks else reply
 
 
 def completion_evidence(reply, observation):
@@ -416,6 +493,19 @@ class CompletionChecks:
         typed = [str(text)[:200] for text in getattr(self, 'typed', [])[-3:] if str(text).strip()]
         if typed:
             observation['facts']['typed'] = typed
+        if (last.get('confirmed') and last.get('status') != 'failed' and last.get('type') in ('click_point', 'press_control')
+                and isinstance(last.get('lines_before'), list) and last.get('label')):
+            # A step the user confirmed (a delete, a send): what it left on screen. Only lines that were
+            # not there when it was chosen, and only once the control it pressed is gone.
+            label = _words(last['label'])
+            still = any(_words(t.get('label', '')) == label for key in ('targets', 'controls') for t in snapshot.get(key) or [] if isinstance(t, dict)) \
+                or any(_words(r.get('text', '')) == label for r in regions)
+            before = {_words(line) for line in last['lines_before']}
+            new = [line for line in observation['screen_text'] if _words(line) not in before and len(line.strip()) >= 2]
+            if new and not still:
+                observation['facts']['after_confirmed_step'] = dict(
+                    step=str(last['label'])[:80], new_text=[line[:160] for line in new[:4]],
+                    evidence='After you confirmed “'+str(last['label'])[:80]+'”: '+'; '.join(line[:80] for line in new[:2]))
         front = (snapshot.get('app') or {}).get('bundle_id')
         if front and observation['app'] and any(
                 receipt.get('type') in ('launch_app', 'focus_app', 'new_window') and receipt.get('status') != 'failed'
@@ -463,6 +553,7 @@ class CompletionChecks:
             sent = {name: value for name, value in observation.items() if not name.startswith('_')}
             reply = completion_result(provider.complete_structured(MET_SYSTEM, [{'role': 'user', 'content': json.dumps(sent, ensure_ascii=False)}],
                                                  schema=completion_schema(observation), max_tokens=320, thinking=False, **cancel_kwargs))
+            reply = credit_confirmed(reply, observation)
         except Exception:  # noqa: BLE001
             if self.cancelled.is_set():
                 raise
@@ -495,6 +586,29 @@ class CompletionChecks:
                 if quote[:200] not in kept and quote[:200] not in getattr(self, 'findings', []):
                     kept.append(quote[:200])
                     del kept[:-4]
+
+    def already_set(self, provider, snapshot, regions, control, cancel_kwargs):
+        """Before a click on a checkbox or switch: what shows that the whole goal is met already with
+        the control as it is, else ''. Two independent things must agree: the verifier proves every
+        part of the goal (completion_evidence), and the control's own state is observed, as a chosen
+        control or as a line on its own row other than its name ("On" beside the switch). Its name
+        alone says nothing about its state (the verifier quoted "Automatic backups" for "make sure
+        automatic backups are on", sim), and a line on another row may belong to another control."""
+        observation, reply = self.checked_completion(provider, snapshot, regions, cancel_kwargs)
+        grounded = isinstance(reply, dict) and completion_evidence(reply, observation)
+        label = _words(control.get('label', ''))
+        state = ''
+        if label in {_words(name) for name in (observation.get('facts') or {}).get('selected_controls') or []}:
+            state = str(control.get('label', ''))
+        rect = control.get('rect') or {}
+        for region in regions if rect and not state else ():
+            middle = region.get('y', -1)+region.get('height', 0)/2
+            text = str(region.get('text', '')).strip()
+            if rect['y'] <= middle <= rect['y']+rect['height'] and len(text) >= 2 and _words(text) != label and _words(text) not in label:
+                state = text
+                break
+        timing('task.already_set', time.monotonic(), grounded=bool(grounded), state_seen=bool(state))
+        return state if grounded else ''
 
     def still_missing(self, provider, snapshot, regions, cancel_kwargs):
         """What the goal asks for that the screen does not show yet ('' when nothing). A failed

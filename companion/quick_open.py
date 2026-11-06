@@ -94,6 +94,8 @@ def plan(request, catalog):
         # "Open safarie" / "open calender" became a web search (request eval): a near miss of one
         # installed app's name, when nothing else has that name, is that app.
         return {'operation': 'launch_app', 'app_name': near['name'], 'target': '', 'browser_mode': 'default', 'remaining_request': rest}
+    if browser is None and closest_app(name, catalog, allow_words=True) is not None:
+        return None  # "open calender": a real word, but near an app's name; the model tells which was meant
     if browser is None and re.match(r'^\W*(?:please\s+)?(?:can|could)\s+you\b', request, re.I):
         # A question with no resolved app, site, address or folder may ask about
         # capabilities. Let the interpreter distinguish that from a polite action

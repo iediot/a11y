@@ -1,4 +1,5 @@
 """Opt-in held-out extensions of measured passes; never run during unit tests.
+Legacy diagnostic, not an acceptance gate; see docs/ai/TESTING.md
 
 Thirty turns, using broad's setup/Task/check/cleanup case format and conversation's
 finally cleanup runner. See live_harder_tasks.md for the evidence and task manifest.

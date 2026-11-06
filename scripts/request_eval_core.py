@@ -540,10 +540,15 @@ def completion_claims(text, apps=()):
 
 _DO = ('open|launch|start|send|create|add|delete|remove|close|quit|turn|set|change|search|look (?:that|it|this) up|look for|look into|check|find|play|buy|'
        'order|do (?:that|it|this|so)|take care|take a look|get (?:that|it|right|back)|make|write|type|click|schedule|remind|book|pull|bring|switch|go to|handle|'
-       'email|message|text|call|show|read|empty|move|run|put|save|update|adjust|lower|raise|mute|mark|see what|sort')
+       'email|message|text|call|show|read|empty|move|run|put|save|update|adjust|lower|raise|mute|mark|see what|sort|'
+       'cancel|undo|rename|replace|edit|reschedule|clear|archive|forward|reply|share|copy|print|download|install|uninstall|restart|'
+       'reopen|complete|finish|submit|upload|unmute|pin|unpin|flag|fix|enable|disable')
 _DOING = ('opening|launching|starting|sending|creating|adding|deleting|removing|closing|quitting|turning|setting|changing|searching|looking|'
           'checking|finding|playing|buying|ordering|doing|making|writing|typing|clicking|scheduling|booking|pulling|bringing|switching|'
-          'emailing|messaging|texting|calling|emptying|moving|running|saving|updating|adjusting|lowering|raising|muting|working on')
+          'emailing|messaging|texting|calling|emptying|moving|running|saving|updating|adjusting|lowering|raising|muting|working on|'
+          'cancell?ing|undoing|renaming|replacing|editing|rescheduling|clearing|archiving|forwarding|replying|sharing|copying|printing|'
+          'downloading|installing|uninstalling|restarting|reopening|completing|finishing|submitting|uploading|unmuting|pinning|flagging|'
+          'fixing|enabling|disabling')
 _PROMISE = re.compile(r"\b(?:i'll|i will|i am going to|i'm going to|i'm gonna|let me)\s+(?:(?:just|now|go ahead and|quickly|get that|go and)\s+)*(?:%s)\b" % _DO)
 _PROGRESS = re.compile(r"\b(?:i'm|i am)\s+(?:(?:now|currently|just)\s+)?(?:%s)\b(?! forward)" % _DOING)
 _PROGRESS_START = re.compile(r"^%s(?:now )?((?:%s)\b(?! forward).*)$" % (_HEAD, _DOING))
@@ -805,7 +810,15 @@ def _unsupported_claims(claims, observed):
     return unsupported
 
 
-def _reply_problems(spec, text, moments):
+def echo_ack(text, request):
+    """True when the reply only notes the user's words back ("Got it: uh never mind." for "uh never mind"):
+    the template for being told something, not an acknowledgement of what the words ask."""
+    words = lambda value: ' '.join(re.findall(r"[\w']+", _fold(value)))
+    said = words(request)
+    return bool(said) and re.fullmatch(r"%s(?: %s)* %s" % (_ACK, _ACK, re.escape(said)), words(text)) is not None
+
+
+def _reply_problems(spec, text, moments, request=''):
     problems = []
     for fact in spec.get('facts') or ():
         if not fact_present(text, fact):
@@ -821,7 +834,7 @@ def _reply_problems(spec, text, moments):
         problems.append('not_a_clarification')
     if spec.get('asks_about') and (not is_clarification(text) or next(_phrase_spans(text, spec['asks_about'], False), None) is None):
         problems.append('not_a_clarification')
-    if spec.get('mentions_any') and not mentions(text, spec['mentions_any']):
+    if spec.get('mentions_any') and (not mentions(text, spec['mentions_any']) or echo_ack(text, request)):
         problems.append('missing_mention')
     if spec.get('says_any') and next(_phrase_spans(text, spec['says_any'], False), None) is None:
         problems.append('missing_mention')  # whole words anywhere: an offer of help is usually a question
@@ -897,7 +910,7 @@ def score_turn(turn, observed):
         for index, outcome in enumerate(expect.get('outcomes') or [dict(NO_ACTION)]):
             problems = match_action(outcome['action'], decision, apps, now)
             if not problems:
-                problems = _reply_problems(outcome.get('reply') or {}, text, moments)
+                problems = _reply_problems(outcome.get('reply') or {}, text, moments, turn.get('say', ''))
                 problems += ['missing_native:'+matcher['name'] for matcher in outcome.get('native') or () if not match_native(matcher, calls, now)]
             if not problems:
                 verdict['matched_outcome'], matched = index, outcome
@@ -977,7 +990,7 @@ def score_turn(turn, observed):
         reasons.append('pending: expected %s, got %s' % (wanted, left))
     if not shown or not shown[-1].strip():
         reasons.append('empty_reply')
-    reply_problems = _reply_problems(expect.get('reply') or {}, text, moments)
+    reply_problems = _reply_problems(expect.get('reply') or {}, text, moments, turn.get('say', ''))
     if reply_problems:
         outcome_ok = False
         reasons.extend(reply_problems)

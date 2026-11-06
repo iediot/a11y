@@ -118,6 +118,22 @@ ABOUT_CONVERSATION = re.compile(r'^\W*(?:what|which|who|when|where|how|did|do|wa
                                 r'(?:say|said|tell|told|mention|mentioned|ask|asked)\b|\byou\s+(?:just\s+)?(?:said|told me|answered)\b)', re.I)
 LAUNCH_FILLER = frozenset("open launch start run bring up the app application program window in please can could would you "
                           "for me my a an to now hey ok okay ally switch go back focus show over return bring front forward".split())
+# How a request to open something is put, not what it asks for: "um could you pull up my notes",
+# "I'd like to open Safari now". Any other word ("bluetooth settings", "a private Safari window",
+# "yesterday's photos") asks for more than the app.
+SAYING_FILLER = LAUNCH_FILLER | frozenset("um umm uh uhh er erm hmm like just quickly real quick so well actually i i'd i'm "
+                                          "want wanna need to would like pull get gimme let let's me pls kindly our up and "
+                                          "also then right thanks thank go ahead it this that them these those".split())
+# A reply that says a change was made ("Done, I've added it"). "Cancelled" is not one: declining the
+# offered button is true as soon as it is said.
+CLAIMS_DONE = re.compile(r"\b(?:done|added|created|saved|scheduled|deleted|removed|booked|sent|updated|completed|"
+                         r"(?:i've|i have|i)\s+(?:just\s+)?(?:set|made|put|changed|moved|marked))\b", re.I)
+
+
+def claims_done(reply):
+    """True when a sentence of `reply` says a change was made, not that it wasn't ("not added yet")."""
+    return any(CLAIMS_DONE.search(part) and not re.search(r"\b(?:not|no|nothing|never|yet)\b|n't\b", part, re.I)
+               for part in re.split(r'(?<=[.!?;])\s+|,\s*but\b', reply))
 # "In Notes, …", "… with Preview": the app is where something else is to happen.
 WORK_PLACE = frozenset(('in', 'inside', 'within', 'into', 'on', 'of', 'from', 'with', 'using'))
 # Actions the UI runs or shows at once; anything else waits as a button the next request can refer to.
@@ -273,29 +289,60 @@ STATED_TIME = re.compile(r"\bat\s+(\d{1,2})(?:[:.](\d{2}))?\s*(a\.?m\.?|p\.?m\.?
 WEEKDAYS = ('monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday')
 STATED_DAY = re.compile(r"\b(?:(next|this)\s+)?(today|tonight|tomorrow|%s)\b" % '|'.join(WEEKDAYS), re.I)
 AT_NOON = re.compile(r"\bat\s+(noon|midday|midnight)\b", re.I)
+# What makes a named day only part of the date: a date itself ("monday the 16th", "16 november"),
+# a relative phrase ("the day after tomorrow", "a week from monday", "friday next week").
+EXPLICIT_DATE = re.compile(r"\b\d{1,2}(?:st|nd|rd|th)\b|\b\d{1,2}[/-]\d{1,2}\b|\b\d{4}-\d{2}-\d{2}\b|"
+                           r"\b(?:january|february|march|april|may|june|july|august|september|october|november|december|"
+                           r"jan|feb|apr|jun|jul|aug|sept?|oct|nov|dec)\b", re.I)
+RELATIVE_DAY = re.compile(r"\b(?:after|before|weeks?|fortnight|days)\b", re.I)
+
+
+def is_midnight(when, request):
+    """True when `when` is the midnight the user said ("at midnight", "at 12 am")."""
+    from .mac_apps import parse_when
+    start = parse_when(when)
+    return bool(start and start.hour == 0 and start.minute == 0 and (
+        re.search(r'\bmidnight\b', request, re.I) or re.search(r'\bat\s+12(?::00)?\s*a\.?m\b', request, re.I)))
 
 
 def stated_day(when, request, now=None):
     """The day the user named ("tomorrow", "next monday") wins over the model's: "next monday at 10"
     said on a Friday came back as the following Friday (request eval). The clock time is kept.
-    A weekday is its coming occurrence; "next <weekday>" on that same weekday is a week on."""
+
+    Only for one unambiguous day word: with a date ("monday the 16th"), a relative phrase ("the day
+    after tomorrow", "a week from monday"), two day words, or a day inside the title ("plan
+    friday's party tomorrow") the model's reading of the whole phrase stands. A weekday is its
+    coming occurrence (a week on when it is today and the time has passed); "next <weekday>" is
+    that day in the next calendar week, never this week's. Midnight ends the named day."""
     from datetime import timedelta
     from .mac_apps import parse_when
-    match = STATED_DAY.search(request)
     start = parse_when(when)
-    if not match or start is None:
+    matches = list(STATED_DAY.finditer(request))
+    if start is None or len(matches) != 1 or EXPLICIT_DATE.search(request) or RELATIVE_DAY.search(request):
         return when
+    match = matches[0]
+    if re.match(r"\s*['’]s\b", request[match.end():]):
+        return when  # "friday's party": part of what, not when
     now = now or datetime.now()
     qualifier, day = (match.group(1) or '').casefold(), match.group(2).casefold()
+    midnight = is_midnight(when, request)
     if day in ('today', 'tonight'):
         ahead = 0
     elif day == 'tomorrow':
         ahead = 1
+    elif qualifier == 'next':
+        index = WEEKDAYS.index(day)
+        ahead = (index-now.weekday()) % 7 or 7
+        if index > now.weekday():
+            ahead += 7  # still ahead this week: "next friday" said on a Wednesday is the week after
     else:
         ahead = (WEEKDAYS.index(day)-now.weekday()) % 7
-        if ahead == 0 and (qualifier == 'next' or start.replace(year=now.year, month=now.month, day=now.day) <= now):
-            ahead = 7  # that weekday is today: the time has passed, or "next" asks for a week on
+        moment = datetime.combine(now.date(), start.time())
+        if ahead == 0 and not midnight and moment <= now:
+            ahead = 7  # that weekday is today and the time has passed: a week on
     wanted = (now+timedelta(days=ahead)).date()
+    if midnight:
+        wanted += timedelta(days=1)  # "friday at midnight" is the end of Friday
     if start.date() == wanted:
         return when
     return datetime.combine(wanted, start.time()).strftime('%Y-%m-%dT%H:%M')
@@ -306,16 +353,31 @@ def stated_time(when, request, now=None):
     model set "remind me to call mom at 6" for 22:46, the time it was then (live). The day
     stays the model's; upcoming() then moves a past time to its next occurrence."""
     from .mac_apps import parse_when
-    match = STATED_TIME.search(request)
-    noon = AT_NOON.search(request)
-    if noon:
-        hour, minute, half = (0 if noon.group(1).casefold() == 'midnight' else 12), 0, 'a' if noon.group(1).casefold() == 'midnight' else 'p'
-    elif not match or int(match.group(1)) > 23 or int(match.group(2) or 0) > 59:
-        return when
+    from datetime import timedelta
+    times = [match for match in STATED_TIME.finditer(request) if int(match.group(1)) <= 23 and int(match.group(2) or 0) <= 59]
+    noons = list(AT_NOON.finditer(request))
+    if len(times)+len(noons) != 1:
+        return when  # none, or "lunch at noon then call at 3pm": which is the reminder's is the model's reading
+    if noons:
+        midnight = noons[0].group(1).casefold() == 'midnight'
+        hour, minute, half = (0, 0, 'a') if midnight else (12, 0, 'p')
     else:
+        match = times[0]
         hour, minute, half = int(match.group(1)), int(match.group(2) or 0), (match.group(3) or '').casefold()[:1]
+        midnight = hour % 12 == 0 and half == 'a'
     now = now or datetime.now()
     start = parse_when(when) or now
+    if midnight:
+        # Midnight ends a day: "tonight at midnight" is 00:00 after today, never this morning's.
+        if parse_when(when) and start.hour == 0 and start.minute == 0 and start > now:
+            return when  # the model read it right
+        day = start.date() if parse_when(when) else now.date()
+        if not parse_when(when) or start.hour or start.minute:
+            day += timedelta(days=1)
+        moment = datetime.combine(day, datetime.min.time())
+        while moment <= now:
+            moment += timedelta(days=1)
+        return moment.strftime('%Y-%m-%dT%H:%M')
     if half:
         hours = [hour % 12+(12 if half == 'p' else 0)]
     elif hour <= 12:
@@ -327,7 +389,6 @@ def stated_time(when, request, now=None):
     if len(hours) == 2 and parse_when(when) and start.date() != now.date():
         hours = [hours[1] if 1 <= hour <= 6 else hours[0] if hour != 12 else 12]  # "Monday at 3" is 15:00
     choices = [start.replace(hour=h, minute=minute, second=0, microsecond=0) for h in hours]
-    from datetime import timedelta
     if parse_when(when) is None or start.date() == now.date():
         choices += [choice+timedelta(days=1) for choice in choices]  # the next one, maybe tomorrow
     future = [choice for choice in choices if choice > now]
@@ -638,9 +699,11 @@ class Companion:
         the app. Words before the name are how the request is put ("um could you pull up my …"):
         every unlisted one used to turn a plain open into a screen task (request eval). Whether they
         ask for more is the interpretation's call (remaining_request and the provider's coverage check)."""
-        from .app_names import normalized
+        from .app_names import edits, normalized
         said = lambda value: re.findall(r"[\w'-]+", value.casefold())
         words, name, named = said(request), normalized(app_name), set(said(app_name))
+        # A misheard name ("open calender" for Calendar) is still the name, not something more.
+        named |= {word for word in words if len(word) >= 6 and any(edits(word, own, 1) <= 1 for own in named | {name})}
         aim = set(said(target))-LAUNCH_FILLER
         if aim and not aim & named and normalized(target) != name:
             return True
@@ -651,9 +714,10 @@ class Companion:
             runs = [span for span in spans if all(word in named for word in words[span[0]:span[1]])]
             span = max(runs, key=lambda span: span[1]-span[0], default=None)
         if span is None:
-            return bool(set(words)-named-LAUNCH_FILLER)  # named some other way ("the browser")
+            return bool(set(words)-named-SAYING_FILLER)  # named some other way ("the browser")
         before = [word for word in words[:span[0]] if word not in ('the', 'my', 'a', 'an', 'your')]
-        return bool(set(words[span[1]:])-LAUNCH_FILLER) or bool(before and before[-1] in WORK_PLACE)
+        return (bool(set(words[span[1]:])-LAUNCH_FILLER) or bool(set(before)-SAYING_FILLER)
+                or bool(before and before[-1] in WORK_PLACE))  # "open it in Preview": the app is the place
 
     def named_installed_app(self, request, writes=False):
         """An installed app, not a browser, that the request names ("the App Store", "TextEdit").
@@ -772,6 +836,18 @@ class Companion:
                                   'full_text': True, 'read_aloud': bool(READ_ALOUD.search(request))}
         return self.last_request_plan
 
+    def proposal_outcome(self, proposed):
+        """'pending' while the offered button waits, 'done' once pressed and the change was made,
+        'pressed' when pressed and anything else came back. Pressed, the UI records the outcome under
+        the button's label (desktop.py, AppWriteWorker); what it recorded tells which."""
+        from .mac_apps import write_succeeded
+        history = self.history(limit=4)
+        for index, item in enumerate(history):
+            if item['role'] == 'user' and item['content'] == proposed['offered']:
+                reply = history[index+1] if index+1 < len(history) else {}
+                return 'done' if reply.get('role') == 'assistant' and write_succeeded(reply.get('content', '')) else 'pressed'
+        return 'pending'
+
     def resolve_follow_up(self, request):
         """"Now do the same with github.com" after a task, as a whole request ("Open Safari and go to
         github.com"). It used to reach the router alone, became chat, and chat said "I'm doing it"
@@ -780,7 +856,8 @@ class Companion:
         # request ("open Notes") from a change.
         short = len(request.split()) <= 5
         from .arithmetic import answer as arithmetic_answer, clock_answer
-        if getattr(self, 'proposed', None):  # absent on a Companion built without __init__ (scripts/router_data.py)
+        if getattr(self, 'proposed', None) and self.proposal_outcome(self.proposed) == 'pending':
+            # (absent on a Companion built without __init__, scripts/router_data.py)
             # "Cancel that" / "make it a reminder instead" point at the proposal still on screen; the
             # router is told about it (route_request). Rewritten here, "cancel that" became "cancel the
             # reminder to water the plants" and then a hunt for a reminder to delete (request eval).
@@ -958,13 +1035,16 @@ class Companion:
         if front:
             # What the user is looking at: "any notifications?" right after opening Teams is about Teams.
             context['front_app'] = front
+        pending = False
         if proposed:
             # The button the last reply offered: "cancel that" declines it, "make it a reminder instead"
-            # changes it. Interpreted with that in view rather than by a word list. Pressed, the UI
-            # records the change under the button's label (desktop.py, AppWriteWorker done): then it is done.
-            recent = [item['content'] for item in self.history(limit=2) if item['role'] == 'user']
-            proposed = dict(proposed, done=proposed['offered'] in recent)
-            context['pending_proposal' if not proposed['done'] else 'last_confirmed_action'] = proposed
+            # changes it. Interpreted with that in view rather than by a word list. Only a change that was
+            # made is reported as confirmed; a pressed button whose write failed is neither.
+            outcome = self.proposal_outcome(proposed)
+            pending = outcome == 'pending'
+            proposed = dict(proposed, done=outcome == 'done')
+            if outcome != 'pressed':
+                context['pending_proposal' if pending else 'last_confirmed_action'] = proposed
         if ABOUT_CONVERSATION.search(request) and self.conversation:
             # "What number did I just say?" is about this conversation, which only the reply sees.
             remembered = self.converse(request, context)
@@ -1095,13 +1175,16 @@ class Companion:
                 # "Are there any notifications that require my attention" read the last email (live).
                 interpreted = dict(interpreted, operation='computer_task', app_name='', target=request, remaining_request='')
             if (interpreted.get('operation') == 'answer' and not interpreted.get('computed') and not self.unsure(interpreted, request)
-                    and str(interpreted.get('reply', '')).strip() and not (proposed and not proposed['done'])):
+                    and str(interpreted.get('reply', '')).strip() and (not pending or claims_done(str(interpreted['reply'])))):
                 # Conversation is answered with short-term memory; empty replies use the normal path. An
                 # answer about the offered button ("cancel that") keeps the router's reply: the memory
                 # rewrite, which never saw the button, promised to remove a reminder (request eval).
+                # Unless that reply says something was done while nothing ran: then it is checked too.
                 remembered = self.converse(request, context)
                 if remembered:
                     interpreted = dict(interpreted, reply=remembered)
+                if pending and claims_done(str(interpreted['reply'])):
+                    interpreted = dict(interpreted, reply='Nothing has been changed yet: “'+proposed['offered']+'” is still waiting for you to confirm it.')
             if (acts and interpreted.get('operation') in BUILT_IN_READS and re.search(
                     r'\b(?:in|on)\s+(?:the\s+)?(?:%s)(?:\s+app)?\b' % '|'.join(map(re.escape, BUILT_IN_READS[interpreted['operation']][:1])), request, re.I)):
                 # "Show me July 2026 in Calendar" read the events aloud: it asks to see the app.

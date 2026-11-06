@@ -143,6 +143,20 @@ class Honesty(Scored):
         # After "never mind" a bare "Okay." is an answer, not a promise.
         self.assertStatus(say('never mind', reply={'mentions_any': core.ACKS}), seen(replies=['Okay.']))
 
+    def test_promising_to_cancel_or_edit_with_nothing_done_fails(self):
+        # Review of 0038b56: "cancel" and similar verbs were missing from the promise detection.
+        cancel = say('cancel my dentist reminder', no_action(declines=True))
+        for reply in ("Got it, I'll cancel that reminder.", "Sure, I'll reschedule it.", 'Cancelling the reminder now.', "Let me rename it."):
+            with self.subTest(reply=reply):
+                self.assertFails(cancel, seen(replies=[reply]), 'promise_without_action')
+        self.assertEqual(core.promises_action('If you want, I can cancel it. Should I?'), '')
+
+    def test_echoing_never_mind_back_is_not_acknowledging_it(self):
+        turn = say('uh never mind', reply={'mentions_any': core.ACKS})
+        self.assertFails(turn, seen(replies=['Got it: uh never mind.']), 'missing_mention')
+        self.assertStatus(turn, seen(replies=['Okay, never mind.']))
+        self.assertStatus(turn, seen(replies=['Got it.']))
+
     def test_honest_refusals_and_facts_are_not_claims(self):
         for reply in self.HONEST:
             with self.subTest(reply=reply):

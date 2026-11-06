@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Legacy desktop diagnostics. Prefer scripts/human_eval.py for outcome evaluation.
+Legacy diagnostic, not an acceptance gate; see docs/ai/TESTING.md
 
     .venv/bin/python scripts/live_eval.py --suite harder --runs 3
     .venv/bin/python scripts/live_eval.py --suite capability --runs 1
@@ -15,10 +16,14 @@ step stages) come from the app's own `A11y timing` stream.
 These diagnostics can change desktop state and require explicit screen availability.
 Suites containing prohibited private applications are disabled, including their setup.
 Use an explicitly configured data directory; no access consent is granted by the runner.
+Every collected case is also screened: one whose request, setup or cleanup names a
+private application is refused unless --allow-private-apps is given (see
+refuse_private_cases). Inventory: docs/ai/LEGACY_LIVE_SUITES.md.
 Legacy pass counts are diagnostic results, not a current capability baseline."""
 import argparse
 from datetime import datetime
 from decimal import Decimal, InvalidOperation, localcontext
+import inspect
 import json
 import os
 from pathlib import Path
@@ -28,6 +33,7 @@ import statistics
 import subprocess
 import sys
 import time
+import types
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -88,6 +94,161 @@ def guard_harness_script(arguments):
             targets.append(argv[int(position)-1])
     if any(target.casefold() in PROHIBITED_HARNESS_TARGETS for target in targets):
         raise RuntimeError('Private applications are prohibited in desktop evaluation; use scripts/human_eval.py with owned fixtures.')
+
+
+# --- private-application screening of collected cases ---------------------------------------
+
+# Applications tests must never open or script (AGENTS.md), as words in a request or in the
+# strings of harness-authored setup/cleanup code. "email" and "inbox" imply Mail. The
+# look-behind keeps URL fragments (EvalWindow.ensure's "https://teams" prefix test) and
+# identifiers (mail_front) from matching; Teams hosts and bundle identifiers match separately.
+PRIVATE_APP_TEXT = re.compile(
+    r"(?<![\w./@-])(?:e-?mails?|mails?|inbox|imessages?|messages|photos|contacts|address\s+book|"
+    r"whatsapp|facetime|(?:microsoft\s+)?teams)(?![\w-])"
+    r"|teams\.(?:microsoft\.com|live\.com|cloud\.microsoft)"
+    r"|\bcom\.apple\.(?:mail|mobilesms|photos|addressbook|facetime)\b"
+    r"|\bcom\.microsoft\.teams2?\b|\bnet\.whatsapp\b", re.I)
+_SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
+_CO_HAS_DOCSTRING = 0x4000000  # Python 3.14+: a function's docstring is co_consts[0]
+
+
+def private_app_mentions(value):
+    """Private-application names in a request, or reachable from a setup/cleanup callable.
+
+    Static: nothing is called. A callable contributes its string constants (not its
+    docstring), string defaults and closure values, and recursively the harness functions
+    it names (globals, module attributes such as le.activate, methods of closure objects
+    such as EvalWindow.ensure) when they are defined in scripts/ or beside the callable.
+    This is a tripwire for harness-authored cases, not a sandbox: a computed string escapes
+    it, which is why guard_harness_script still checks every osascript call at run time.
+    """
+    found = []
+    _scan_private(value, found, set(), None)
+    return sorted({name.casefold(): name for name in found}.values(), key=str.casefold)
+
+
+def _scan_private(value, found, seen, home):
+    if isinstance(value, str):
+        found.extend(match.group(0) for match in PRIVATE_APP_TEXT.finditer(value))
+    elif isinstance(value, (list, tuple, set, frozenset)):
+        for item in value:
+            _scan_private(item, found, seen, home)
+    elif isinstance(value, dict):
+        for item in value.values():
+            _scan_private(item, found, seen, home)
+    elif inspect.ismethod(value):
+        _scan_private(value.__func__, found, seen, home)
+    elif inspect.isfunction(value):
+        _scan_private_function(value, found, seen, home)
+
+
+def _scan_private_function(function, found, seen, home):
+    code = function.__code__
+    if id(function) in seen:
+        return
+    if home is None:
+        home = code.co_filename  # the case's own callable is always read
+    elif code.co_filename != home and os.path.dirname(os.path.abspath(code.co_filename)) != _SCRIPTS_DIR:
+        return  # library code (subprocess, unittest.mock) is not harness-authored
+    seen.add(id(function))
+    _scan_private(function.__defaults__ or (), found, seen, home)
+    _scan_private(list((function.__kwdefaults__ or {}).values()), found, seen, home)
+    objects = []
+    for cell in function.__closure__ or ():
+        try:
+            content = cell.cell_contents
+        except ValueError:  # an unassigned free variable
+            continue
+        if isinstance(content, (str, list, tuple, set, frozenset, dict)) or inspect.isfunction(content) or inspect.ismethod(content):
+            _scan_private(content, found, seen, home)
+        elif not inspect.ismodule(content) and not isinstance(content, type):
+            objects.append(content)
+    _scan_private_code(code, function.__doc__, function.__globals__, objects, found, seen, home)
+
+
+def _nested_docstring(code):
+    consts = code.co_consts
+    if code.co_name.startswith('<') or not consts or not isinstance(consts[0], str):
+        return None
+    if sys.version_info >= (3, 14):
+        return consts[0] if code.co_flags & _CO_HAS_DOCSTRING else None
+    return consts[0]  # before 3.14 a function without a docstring starts with None
+
+
+def _scan_private_code(code, docstring, namespace, objects, found, seen, home):
+    for constant in code.co_consts:
+        if isinstance(constant, types.CodeType):
+            _scan_private_code(constant, _nested_docstring(constant), namespace, objects, found, seen, home)
+        elif isinstance(constant, (str, tuple, frozenset)) and not (docstring is not None and constant == docstring):
+            _scan_private(constant, found, seen, home)
+    modules = []
+    for name in code.co_names:
+        target = namespace.get(name)
+        if inspect.ismodule(target):
+            path = getattr(target, '__file__', None)
+            if path and os.path.dirname(os.path.abspath(path)) == _SCRIPTS_DIR:
+                modules.append(target)
+        elif inspect.isfunction(target):
+            _scan_private_function(target, found, seen, home)
+    for name in code.co_names:
+        for owner in modules:
+            attribute = getattr(owner, name, None)
+            if inspect.isfunction(attribute):
+                _scan_private_function(attribute, found, seen, home)
+        for owner in objects:
+            attribute = getattr(type(owner), name, None)  # class attribute: no property is evaluated
+            if inspect.isfunction(attribute):
+                _scan_private_function(attribute, found, seen, home)
+
+
+def _case_parts(case):
+    """(label, [(part, value)]) for a Case, a live_tasks.Task or a conversation-style dict.
+
+    Checks are deliberately not screened: they observe state, and an observing check that
+    scripts a private app is still stopped by guard_harness_script. A cleanup step given as
+    (request, verify) contributes its request only.
+    """
+    def steps(values):
+        return [step[0] if isinstance(step, tuple) and step else step for step in values or ()]
+
+    def task_parts(task, prefix=''):
+        return [(prefix+'request', str(task.request)), (prefix+'setup', getattr(task, 'setup', None)),
+                (prefix+'cleanup', steps(getattr(task, 'cleanup', ())))]
+    if isinstance(case, dict):
+        parts = [('setup', case.get('setup')), ('cleanup', steps(case.get('cleanup')))]
+        for index, turn in enumerate(case.get('turns', ()), 1):
+            parts += task_parts(turn, 'turn %d ' % index)
+        return str(case.get('name', '?')), parts
+    return getattr(case, 'family', None) or str(case.request)[:60], task_parts(case)
+
+
+def private_case_reasons(case):
+    """(label, reasons): why a collected case touches a private application, if it does."""
+    label, parts = _case_parts(case)
+    reasons = []
+    for part, value in parts:
+        names = private_app_mentions(value)
+        if names:
+            reasons.append('%s names %s' % (part, ', '.join(names)))
+    return label, reasons
+
+
+def refuse_private_cases(cases, allow=False, report=None):
+    """The cases that may run. Without allow, every case naming a private application in its
+    request, setup or cleanup is dropped before anything starts, and the reason is printed."""
+    report = report or (lambda line: print(line, flush=True))
+    kept = []
+    for case in cases:
+        label, reasons = private_case_reasons(case)
+        if reasons and not allow:
+            report('refused %s: %s. Tests must not open or script Mail, Messages, Photos, Contacts, Teams, '
+                   'WhatsApp or FaceTime (AGENTS.md); --allow-private-apps exists only for an explicit owner '
+                   'instruction.' % (label, '; '.join(reasons)))
+            continue
+        if reasons:
+            report('running private-application case %s because --allow-private-apps was given: %s' % (label, '; '.join(reasons)))
+        kept.append(case)
+    return kept
 
 
 def arithmetic_result(left, operation, right):
@@ -1251,6 +1412,9 @@ def main():
     parser.add_argument('--tasks', type=int, default=14, help='varied suite: how many random tasks')
     parser.add_argument('--seed', type=int, help='varied suite: repeat an earlier run (printed at the start)')
     parser.add_argument('--max-turns',type=int,help='diagnostic prefix only: first N turns of each selected conversation')
+    parser.add_argument('--allow-private-apps', action='store_true',
+                        help='also run collected cases whose request, setup or cleanup names Mail, Messages, Photos, Contacts, '
+                             'Teams, WhatsApp or FaceTime; only on an explicit owner instruction. Disabled suites stay disabled.')
     args = parser.parse_args()
     if args.suite not in SAFE_LEGACY_SUITES:
         parser.error('That legacy suite contains private-application tasks and is disabled. Use scripts/human_eval.py with owned fixtures, or explicitly select a safe diagnostic suite.')
@@ -1271,6 +1435,7 @@ def main():
         import importlib
         from live_conversation import run
         cases = importlib.import_module('live_'+args.suite).build(eval_window,seed=args.seed if args.seed is not None else 0)
+        cases = refuse_private_cases(cases, args.allow_private_apps)
         if ONLY:
             cases = [case for case in cases if any(text.casefold() in turn.request.casefold()
                      for turn in case['turns'] for text in ONLY)]
@@ -1287,7 +1452,8 @@ def main():
         return run(app, eval_window, out, cases, args.runs)
     if args.suite in ('v2', 'v3', 'heldout'):
         return run_v2(app, eval_window, out, args.tasks, args.seed if args.seed is not None else int(time.time()) % 100000,
-                      hard={'v2': False, 'v3': 'live_hard', 'heldout': 'live_heldout'}[args.suite])
+                      hard={'v2': False, 'v3': 'live_hard', 'heldout': 'live_heldout'}[args.suite],
+                      allow_private=args.allow_private_apps)
     seed = args.seed if args.seed is not None else int(time.time()) % 100000
     if args.suite in ('varied', 'all'):
         PANES[:] = settings_panes()
@@ -1296,6 +1462,7 @@ def main():
               'varied': lambda window: build_varied(window, args.tasks, seed)}
     chosen = [suites[name](eval_window) for name in (suites if args.suite == 'all' else [args.suite])]
     cases = [case for group in chosen for case in group if not args.only or any(text.casefold() in case.request.casefold() for text in args.only)]
+    cases = refuse_private_cases(cases, args.allow_private_apps)
     records = []
     app.launch()
     try:
@@ -1326,7 +1493,7 @@ def main():
     print('\noverall %d/%d' % total)
 
 
-def run_v2(app, eval_window, out, count, seed, hard=False):
+def run_v2(app, eval_window, out, count, seed, hard=False, allow_private=False):
     """Varied tasks, each once (scripts/live_tasks.py; with hard, scripts/live_hard.py: harder,
     multi-step tasks plus the older ones that still fail); writes runs.jsonl and report.md."""
     import live_tasks
@@ -1338,6 +1505,7 @@ def run_v2(app, eval_window, out, count, seed, hard=False):
         tasks = importlib.import_module(hard).build(eval_window, count, seed)
     else:
         tasks = live_tasks.build(eval_window, count, seed)
+    tasks = refuse_private_cases(tasks, allow_private)
     if ONLY:
         tasks = [task for task in tasks if any(text.casefold() in task.request.casefold() for text in ONLY)]
     print(hard or 'v2', 'seed', seed, '·', len(tasks), 'tasks', flush=True)

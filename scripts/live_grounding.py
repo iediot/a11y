@@ -1,4 +1,5 @@
-"""Fresh loopback canvas scenes: no target labels in AX/OCR, independent pointer-hit truth."""
+"""Fresh loopback canvas scenes: no target labels in AX/OCR, independent pointer-hit truth.
+Legacy diagnostic, not an acceptance gate; see docs/ai/TESTING.md"""
 import json
 import random
 import secrets

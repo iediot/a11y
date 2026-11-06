@@ -1,4 +1,5 @@
 """Owner-authorized local capability tests: independent fixtures and long conversations.
+Legacy diagnostic, not an acceptance gate; see docs/ai/TESTING.md
 
 Build is pure. Each case owns its temporary files and keeps one app process across
 all turns. Native state, not the assistant's claims, determines task success.

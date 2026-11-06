@@ -1,4 +1,5 @@
 """Harder live tasks for scripts/live_eval.py --suite v3.
+Legacy diagnostic, not an acceptance gate; see docs/ai/TESTING.md
 
 Multi-step and cross-app goals, conditions, comparisons and reuse of what is already open,
 with ground truth the harness works out itself at run time (Wikipedia, the Hacker News API,

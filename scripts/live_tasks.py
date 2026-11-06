@@ -1,4 +1,5 @@
 """Harder, varied live tasks for scripts/live_eval.py --suite v2.
+Legacy diagnostic, not an acceptance gate; see docs/ai/TESTING.md
 
 Every run draws a fresh set from about thirty task families (random apps, places, numbers,
 sentences and wording) and runs each task once. A task has several checks, graded as a

@@ -1,4 +1,5 @@
-"""Opt-in multi-turn live cases. No app restart or cleanup between turns."""
+"""Opt-in multi-turn live cases. No app restart or cleanup between turns.
+Legacy diagnostic, not an acceptance gate; see docs/ai/TESTING.md"""
 from datetime import datetime, timedelta
 from html.parser import HTMLParser
 import json

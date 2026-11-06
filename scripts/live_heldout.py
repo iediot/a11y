@@ -1,4 +1,5 @@
 """Private held-out macOS live tasks; imported explicitly by the evaluation driver.
+Legacy diagnostic, not an acceptance gate; see docs/ai/TESTING.md
 
 No task confirms a write. Setup only reads data, opens pages, or activates apps.
 Ground truth is collected during setup/check, never at import or build time.

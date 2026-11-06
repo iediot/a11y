@@ -26,6 +26,18 @@ Run dirs in `.data/eval/2026-11-06/`: `req2-{dev,acc}-head-1`, `req2-{dev,acc}-w
 held-out unchanged at 124/165 operations. Acceptance sim gains are small: the task-loop
 fixes generalise only partly beyond dev wording.
 
+## Follow-up (2026-11-06, after review fixes and task-loop round 2)
+
+| Eval | Split | Previous | Now | False success | Unauthorized |
+|---|---|---|---|---|---|
+| Request (stricter scorer: cancel promises, echo replies) | acceptance | 83 / 36 / 8 | 82 / 37 / 8 (`req3-acc-final`) | 0 | 0 |
+| Sim v2 | dev | 20 / 5 | 25 / 0 (`dev-final`) | 1 → 0 | 0 |
+| Sim v2 | acceptance | 13 / 12 | 14 / 11 (`acc-final`) | 4 → 3 | 0 |
+
+Reading: dev is now saturated while acceptance barely moves, so the remaining sim
+failures are not reachable by fixing dev cases. Next: new, differently shaped dev
+scenarios, or a model limitation (see TRAINING.md). Unit suite 1608 OK.
+
 ## Unit suite
 
 | Date | Tree | Result |

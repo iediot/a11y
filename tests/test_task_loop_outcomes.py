@@ -835,6 +835,122 @@ class ReviewedEdges(Loop):
 
 
 @unittest.skipUnless(importlib.util.find_spec('PyQt6'), 'Qt is required to compare how a control looks')
+class GoalsMetOrUnclear(Loop):
+    """Second round of sim defects: a goal already met is not undone, a named browser is used,
+    two equal matches are asked about, a joined clause stays required, a confirmed change and
+    a value read in passing count."""
+    def backups(self, state='On'):
+        # "On" is the line at y .22-.26; the switch's own row covers exactly that line.
+        self.show(app=FORMS, title='Backup settings', lines=['Backup settings', 'Automatic backups', state],
+                  targets=[target('AXCheckBox', 'Automatic backups', 154, width=600, height=28)])
+        self.provider.steps = [click('t1')]
+
+    def test_a_switch_already_as_asked_is_left_alone(self):
+        # sim, pre-satisfied: "make sure automatic backups are switched on" with them on; the click switched them off.
+        task = self.task('Make sure automatic backups are switched on.', mode='change')
+        self.backups('On')
+        self.provider.verification = verdict(check('automatic backups are switched on', 'find_out', 'On'))
+        step = self.propose(task)
+        self.assertEqual(step['status'], 'done')   # old: the click on the switch was proposed
+        self.assertIsNone(step['action'])
+        self.assertIn('“On”', step['message'])
+        self.assertIsNone(task.pending)
+
+    def test_the_switch_is_clicked_when_the_goal_is_not_met_or_its_state_is_not_seen(self):
+        task = self.task('Make sure automatic backups are switched on.', mode='change')
+        self.backups('Off')
+        self.provider.verification = verdict(check('automatic backups are switched on', 'change', '', False), met=False)
+        self.assertEqual(self.propose(task)['action']['label'], 'Automatic backups')
+        # Its name is no state: met with only the name on its row is not "already on".
+        task = self.task('Make sure automatic backups are switched on.', mode='change')
+        self.show(app=FORMS, title='Backup settings', lines=['Backup settings', 'Automatic backups', 'Saved nightly'],
+                  targets=[target('AXCheckBox', 'Automatic backups', 112, width=600, height=28)])   # its row holds only its name
+        self.provider.steps = [click('t1')]
+        self.provider.verification = verdict(check('automatic backups are switched on', 'find_out', 'Saved nightly'))
+        self.assertEqual(self.propose(task)['status'], 'action')
+
+    def minutes(self):
+        names = ['Letters', 'Marlcombe minutes', 'Varnhaven minutes']
+        self.show(app=FINDER, title='Documents', lines=['Documents']+names,
+                  finder={'target': '/Users/a/Documents/', 'view': 'list view', 'selection': []},
+                  targets=[target('AXTextField', name, 200+i*30, file_item=True) for i, name in enumerate(names)])
+
+    def test_two_equal_matches_are_asked_about_before_anything_runs(self):
+        # sim, ambiguous: "open the minutes folder" opened "Marlcombe minutes" and ended without asking.
+        task = self.task('Open the minutes folder.', mode='change')
+        self.minutes()
+        self.provider.steps = [click('t2')]
+        step = self.propose(task)
+        self.assertEqual(step['status'], 'needs_user')
+        self.assertIsNone(step['action'])
+        self.assertIsNone(task.pending)
+        self.assertIn('Marlcombe minutes', step['message'])
+        self.assertIn('Varnhaven minutes', step['message'])
+        self.assertTrue(step['message'].endswith('?'))
+
+    def test_a_goal_that_says_which_one_is_not_asked_about(self):
+        for goal in ('Open the Varnhaven minutes folder.', 'Open the Letters folder.', 'Open the Quarry minutes folder.'):
+            with self.subTest(goal=goal):
+                task = self.task(goal, mode='change')
+                self.minutes()
+                self.provider.steps = [click('t3' if 'Varnhaven' in goal else 't1' if 'Letters' in goal else 't2')]
+                # (Quarry is nowhere on screen: the one meant may be out of view, no question then)
+                self.assertEqual(self.propose(task)['status'], 'action')
+
+    def test_the_named_browser_comes_forward_first(self):
+        # sim, named browser: "In Safari, open the Fees page…" with Chrome in front; the task worked in Chrome.
+        chrome = {'name': 'Google Chrome', 'bundle_id': 'com.google.Chrome', 'pid': 13}
+        self.show(app=chrome, title='Inverwell Tennis Club', lines=['Inverwell Tennis Club', 'Fees'])
+        self.bridge.value['available_apps'] = [dict(chrome), dict(SAFARI)]
+        self.bridge.value['installed_apps'] = [{'name': 'Google Chrome', 'bundle_id': 'com.google.Chrome'}, {'name': 'Safari', 'bundle_id': 'com.apple.Safari'}]
+        task = ComputerTask('In Safari, open the Fees page of the site that’s open there and tell me what court hire costs.',
+                            automatic=True, goal_mode='inspect')
+        step = self.propose(task)
+        self.assertEqual((step['action']['type'], step['action']['bundle_id']), ('focus_app', 'com.apple.Safari'))
+        self.assertEqual(self.provider.step_messages, [])   # no model step, no plan call
+
+    def test_a_joined_clause_no_part_mentions_stays_required(self):
+        observation = {'goal': 'Put Ignace Penford as the display name and tick the box about due dates.', 'app': 'Formbook', 'window': 'Card',
+                       'screen_text': ['Display name', 'Ignace Penford'], 'facts': {'typed': ['Ignace Penford']}}
+        only_first = completion_result(verdict(check('Put Ignace Penford as the display name', 'change', 'Ignace Penford')))
+        self.assertFalse(completion_evidence(only_first, observation))   # old: proven by the first clause alone
+        self.assertIn('tick the box about due dates', unproven_parts(only_first, observation))
+        both = completion_result(verdict(check('Put Ignace Penford as the display name', 'change', 'Ignace Penford'),
+                                         check('tick the due date box', 'change', 'Ignace Penford')))
+        self.assertNotIn('tick the box about due dates', unproven_parts(both, observation))
+        # A clause that says "not", and words in their own sentence (a hint), are not required parts.
+        hint = dict(observation, goal='Put Ignace Penford as the display name and do not submit it. It should be on the card page.')
+        self.assertTrue(completion_evidence(only_first, hint))
+
+    def deleted(self, confirmed):
+        task = self.task('Get rid of this draft claim.', mode='change')
+        self.show(app=FORMS, title='Expense claim draft', lines=['Expense claim draft', 'Draft deleted.'], targets=[])
+        task.receipts = [dict(type='click_point', label='Delete draft', status='submitted', screen='before',
+                              lines_before=['Expense claim draft', 'Amount', 'Delete draft'], **({'confirmed': True} if confirmed else {}))]
+        self.provider.verification = verdict(check('Get rid of this draft claim', 'find_out', '', False), met=False)
+        return task, self.desktop.collect_once(targets=True)
+
+    def test_a_confirmed_change_that_took_effect_is_its_proof(self):
+        # sim, delete: the user confirmed "Delete draft", "Draft deleted." appeared, and the task said it could not finish.
+        task, snapshot = self.deleted(True)
+        regions = [{'text': line, 'x': .5, 'y': .1+i*.06, 'width': .3, 'height': .04} for i, line in enumerate(self.lines)]
+        self.assertEqual(task.still_missing(self.provider, snapshot, regions, {}), '')
+        task, snapshot = self.deleted(False)   # not a step the user confirmed: the verifier's word stands
+        self.assertNotEqual(task.still_missing(self.provider, snapshot, regions, {}), '')
+        task, snapshot = self.deleted(True)
+        self.provider.verification = verdict(check('what the claim amount was', 'find_out', '', False), met=False)
+        self.assertNotEqual(task.still_missing(self.provider, snapshot, regions, {}), '')   # a question is not answered by a press
+
+    def test_a_value_the_step_model_reads_in_passing_is_kept(self):
+        # sim, two facts: "The adult ticket is £11.60. Now the car park." was never checked on its page and was lost.
+        task = self.task('I need two things from this site: the price of an adult ticket and what the car park costs.')
+        self.show(title='Tickets', url='https://museum.example/tickets', lines=['Tickets', 'Child ticket: £5.20', 'Adult ticket: £11.60'],
+                  targets=[target('AXLink', 'Visiting', 60)])
+        self.provider.steps = [dict(click('t1'), message='The adult ticket is £11.60. Now the car park.')]
+        self.run_step(task)
+        self.assertEqual(task.findings, ['Adult ticket: £11.60'])   # old: []
+
+
 class UnreadableCapture(StateOnlyControls):
     def test_a_capture_that_cannot_be_read_is_not_a_state_change(self):
         task = self.form()

@@ -1,4 +1,5 @@
 """Thirty-three opt-in everyday tasks; look-only settings and no private applications.
+Legacy diagnostic, not an acceptance gate; see docs/ai/TESTING.md
 
 The timer case refuses to start with an existing running timer and cancels its own
 timer in cleanup. Checks fail closed if macOS lacks the AX

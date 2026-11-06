@@ -21,11 +21,13 @@ work), never Fable; at most two at once.
 | P5 request mechanisms 1–4 | done, not independently reviewed |
 | P6 task-loop fixes A–F | done, reviewed, review fixes applied |
 | P7 live confirmation | blocked: Accessibility not granted; owner says the screen is not available |
-| P8 legacy live suites | not started |
+| P8 legacy live suites | done: private-app cases refused by default, inventory in LEGACY_LIVE_SUITES.md (implemented via kiro-cli) |
 | Training | diagnosed, not started (TRAINING.md); Arch needs owner's Tailscale re-auth |
 
-Results: request acceptance 65 → 83 passes of 127, sim dev false successes 7 → 1, zero
-unauthorized actions throughout. Sim acceptance moved only 12 → 13.
+Results: request acceptance 65 → 82 of 127 (stricter scorer), sim dev 16 → 25 of 25 with
+false successes 7 → 0, zero unauthorized actions throughout. Sim acceptance moved only
+12 → 14: dev is saturated and its fixes generalise poorly. Request fixes and task-loop
+round 2 are reviewed once (request) / not yet reviewed (task loop round 2).
 
 ## Open defects, highest value first
 
