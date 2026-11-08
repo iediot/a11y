@@ -43,7 +43,8 @@ ONNX = ['kokoro_onnx', 'onnxruntime']
 if sys.platform == 'win32':
     UNUSED_MODULES += ONNX
 # Optional voice stack: bundled when installed in the build environment.
-for package in ['faster_whisper', 'ctranslate2', 'espeakng_loader', 'sounddevice', 'tokenizers']+([] if sys.platform == 'win32' else ONNX):
+# language_tags (phonemizer -> csvw, under kokoro_onnx) reads JSON data files at import.
+for package in ['faster_whisper', 'ctranslate2', 'espeakng_loader', 'sounddevice', 'tokenizers']+([] if sys.platform == 'win32' else ONNX+['language_tags']):
     try:
         package_datas, package_binaries, package_imports = collect_all(package, filter_submodules=wanted)
     except Exception:
